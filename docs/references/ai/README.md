@@ -47,6 +47,7 @@ renderer-side transport that connects to them.
 | [Browser Use Design](./browser-use-design.md) | Browser automation ownership, capability gaps, and delivery roadmap |
 | [Browser Use Implementation](./browser-use-implementation.md) | Session engine, MCP contracts, and implementation plan |
 | [企业微信 Channel 接入方案](./wecom-channel-design.md) | Proposed WeCom integration, session bindings, stream lifecycle, attachments, delivery limits, and acceptance criteria |
+| [钉钉 Channel 接入方案](./dingtalk-channel-design.md) | Proposed DingTalk Stream reception, HTTP replies, SDK prerequisites, AI cards, attachments, and acceptance criteria |
 
 ### Renderer-side glue
 
@@ -61,8 +62,9 @@ renderer-side transport that connects to them.
 
 > **Scope of the focused docs.** The reference documents in this folder map
 > the **chat / stream pipeline** (dispatch → stream manager → runtime →
-> tools → persistence → renderer transport). The WeCom channel design describes
-> the integration and its pending acceptance checks; the `channels/`, `skills/`, and `mcp/` subsystems are
+> tools → persistence → renderer transport). Channel designs cover the WeCom
+> integration and the proposed DingTalk integration with their acceptance checks;
+> the `channels/`, `skills/`, and `mcp/` subsystems are
 > mapped in the tree below but do not yet have complete subsystem references.
 
 ```
