@@ -20,6 +20,7 @@ import { toast } from '@renderer/services/toast'
 import { getTextFromParts } from '@renderer/utils/message/partsHelpers'
 import { isMac } from '@renderer/utils/platform'
 import { cn } from '@renderer/utils/style'
+import { deriveThinkingOptions } from '@shared/ai/reasoning'
 import { ThemeMode } from '@shared/data/preference/preferenceTypes'
 import type { CherryMessagePart, CherryUIMessage } from '@shared/data/types/message'
 import { type CherryReasoningMeta, readCherryMeta, withCherryMeta } from '@shared/data/types/uiParts'
@@ -28,6 +29,7 @@ import ClipboardPreview from './components/ClipboardPreview'
 import type { FeatureMenusRef } from './components/FeatureMenus'
 import FeatureMenus from './components/FeatureMenus'
 import Footer from './components/Footer'
+import HistoryMenu from './components/HistoryMenu'
 import InputBar from './components/InputBar'
 
 // Lazy boundaries (S6b): the chat/translate branches carry the heavy message
@@ -79,14 +81,18 @@ export const finalizeLiveMessages = (messages: CherryUIMessage[]): CherryUIMessa
   })
 }
 
-const HomeWindow: FC<{ draggable?: boolean }> = ({ draggable = true }) => {
+const HomeWindow: FC<{ draggable?: boolean; preview?: boolean }> = ({ draggable = true, preview = false }) => {
   const [readClipboardAtStartup] = usePreference('feature.quick_assistant.read_clipboard_at_startup')
   const [quickAssistantId] = usePreference('feature.quick_assistant.assistant_id')
+  const [keepHistory] = usePreference('feature.quick_assistant.keep_history')
+  const [historyLimit] = usePreference('feature.quick_assistant.history_limit')
+  const [qaReasoningEffort] = usePreference('feature.quick_assistant.reasoning_effort')
   const [windowStyle] = usePreference('ui.window_style')
   const { theme } = useTheme()
   const { t } = useTranslation()
 
   const [route, setRoute] = useState<MiniRoute>('home')
+  const [showHistory, setShowHistory] = useState(false)
   const [isFirstMessage, setIsFirstMessage] = useState(true)
   const [userInputText, setUserInputText] = useState('')
   const [clipboardText, setClipboardText] = useState('')
@@ -116,7 +122,8 @@ const HomeWindow: FC<{ draggable?: boolean }> = ({ draggable = true }) => {
   const {
     topicId: temporaryTopicId,
     ready: isTopicReady,
-    reset: resetTemporaryTopic
+    reset: resetTemporaryTopic,
+    persist: persistTemporaryTopic
   } = useTemporaryTopic({ enabled: true, assistantId: chosenAssistant?.id })
 
   const requestText = useMemo(() => {
@@ -296,6 +303,39 @@ const HomeWindow: FC<{ draggable?: boolean }> = ({ draggable = true }) => {
 
   const handleCloseWindow = useCallback(() => ipcApi.request('quick_assistant.hide'), [])
 
+  // Title seeding: the first user question, cut to one line (persist clamps further).
+  const conversationName = useMemo(() => {
+    const firstUser = chatMessages.find((message) => message.role === 'user')
+    const text = firstUser?.parts ? getTextFromParts(firstUser.parts) : ''
+    return text.trim().split('\n')[0]
+  }, [chatMessages])
+
+  const hasConversation = chatMessages.length > 0 || completedAssistants.length > 0
+
+  const persistConversation = useCallback(async (): Promise<boolean> => {
+    if (!keepHistory || preview || !temporaryTopicId || !hasConversation) return true
+    try {
+      await persistTemporaryTopic({ name: conversationName, source: 'quick_assistant' })
+      return true
+    } catch (err) {
+      logger.warn('Failed to keep the quick assistant conversation', err as Error)
+      toast.error(t('quickAssistant.history.save_failed'))
+      return false
+    }
+  }, [keepHistory, preview, temporaryTopicId, hasConversation, persistTemporaryTopic, conversationName, t])
+
+  // Window destroy / app quit: promote before the hook releases the topic.
+  // persist() releases ownership synchronously, so the hook cleanup cannot
+  // race this save with a DELETE.
+  const persistOnExitRef = useRef<() => void>(() => {})
+  persistOnExitRef.current = () => {
+    if (!keepHistory || preview || !temporaryTopicId || !hasConversation) return
+    void persistTemporaryTopic({ name: conversationName, source: 'quick_assistant' }).catch((err) =>
+      logger.warn('Failed to keep the quick assistant conversation on exit', err as Error)
+    )
+  }
+  useEffect(() => () => persistOnExitRef.current(), [])
+
   const handleSendMessage = useCallback(
     async (prompt?: string) => {
       if (isEmpty(requestText)) return
@@ -308,7 +348,19 @@ const HomeWindow: FC<{ draggable?: boolean }> = ({ draggable = true }) => {
         setIsPreparing(true)
         const message = { text: [prompt, requestText].filter(Boolean).join('\n\n') }
         if (!isAssistantMode && currentModel) {
-          void sendMessage(message, { body: { mentionedModels: [currentModel.id] } })
+          const body: Record<string, unknown> = { mentionedModels: [currentModel.id] }
+          const requestedEffort: string = qaReasoningEffort ?? 'default'
+          const supported: readonly string[] = deriveThinkingOptions(currentModel) ?? []
+          if (requestedEffort !== 'default') {
+            // A value outside the model's vocabulary is never silently projected:
+            // send `default` and let the user re-pick.
+            if (supported.includes(requestedEffort)) {
+              body.reasoningEffort = requestedEffort
+            } else {
+              toast.info(t('quickAssistant.effort.unsupported'))
+            }
+          }
+          void sendMessage(message, { body })
         } else {
           void sendMessage(message)
         }
@@ -318,20 +370,32 @@ const HomeWindow: FC<{ draggable?: boolean }> = ({ draggable = true }) => {
         logger.error('Error fetching result:', resolvedError)
       }
     },
-    [currentModel, isAssistantMode, isTopicReady, requestText, sendMessage, temporaryTopicId]
+    [currentModel, isAssistantMode, isTopicReady, qaReasoningEffort, requestText, sendMessage, t, temporaryTopicId]
   )
 
   const handlePause = useCallback(() => {
     void stopChat()
   }, [stopChat])
 
-  const resetConversation = useCallback(() => {
-    // Drop the current temporary topic and let useTemporaryTopic lease a fresh one.
-    resetTemporaryTopic()
-    clear()
-  }, [clear, resetTemporaryTopic])
+  const isResettingRef = useRef(false)
 
-  const handleEsc = useCallback(() => {
+  // Explicit order: save or discard -> confirm the save -> lease a fresh
+  // temporary topic -> reset the screen. A failed save keeps the conversation.
+  const resetConversation = useCallback(async (): Promise<boolean> => {
+    if (isResettingRef.current) return false
+    isResettingRef.current = true
+    try {
+      const saved = await persistConversation()
+      if (!saved) return false
+      resetTemporaryTopic()
+      clear()
+      return true
+    } finally {
+      isResettingRef.current = false
+    }
+  }, [clear, persistConversation, resetTemporaryTopic])
+
+  const handleEsc = useCallback(async () => {
     if (isLoading) {
       handlePause()
       return
@@ -342,11 +406,13 @@ const HomeWindow: FC<{ draggable?: boolean }> = ({ draggable = true }) => {
       return
     }
 
-    resetConversation()
+    const reset = await resetConversation()
+    if (!reset) return
     featureMenusRef.current?.resetSelectedIndex()
     setFlowError(null)
     setRoute('home')
     setUserInputText('')
+    setShowHistory(false)
   }, [handleCloseWindow, handlePause, isLoading, resetConversation, route])
 
   const handleCopy = useCallback(() => {
@@ -393,7 +459,7 @@ const HomeWindow: FC<{ draggable?: boolean }> = ({ draggable = true }) => {
         }
         break
       case 'Escape':
-        handleEsc()
+        void handleEsc()
         break
     }
   }
@@ -503,14 +569,24 @@ const HomeWindow: FC<{ draggable?: boolean }> = ({ draggable = true }) => {
             />
           )}
           <Separator className="my-2.5" />
-          <ClipboardPreview clipboardText={clipboardText} clearClipboard={clearClipboard} t={t} />
+          {!showHistory && <ClipboardPreview clipboardText={clipboardText} clearClipboard={clearClipboard} t={t} />}
           <main className="flex flex-1 flex-col overflow-hidden">
-            <FeatureMenus
-              setRoute={setRoute}
-              onSendMessage={handleSendMessage}
-              text={requestText}
-              ref={featureMenusRef}
-            />
+            {showHistory ? (
+              <HistoryMenu
+                limit={historyLimit}
+                onClose={() => {
+                  setShowHistory(false)
+                  focusInput()
+                }}
+              />
+            ) : (
+              <FeatureMenus
+                setRoute={setRoute}
+                onSendMessage={handleSendMessage}
+                text={requestText}
+                ref={featureMenusRef}
+              />
+            )}
           </main>
           <Separator className="my-2.5" />
           <Footer
@@ -518,6 +594,7 @@ const HomeWindow: FC<{ draggable?: boolean }> = ({ draggable = true }) => {
             {...baseFooterProps}
             canUseBackspace={userInputText.length > 0 || clipboardText.length === 0}
             clearClipboard={clearClipboard}
+            onHistory={() => setShowHistory((open) => !open)}
           />
         </div>
       )

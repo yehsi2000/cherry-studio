@@ -12,6 +12,7 @@ type TestModel = {
   name: string
   providerId: string
   group: string
+  capabilities: string[]
 }
 
 const state = vi.hoisted(() => ({
@@ -21,14 +22,16 @@ const state = vi.hoisted(() => ({
     modelId: 'qwen',
     name: 'Qwen',
     providerId: 'cherryai',
-    group: 'CherryAI'
+    group: 'CherryAI',
+    capabilities: []
   },
   quickModel: {
     id: 'anthropic::claude-sonnet',
     modelId: 'claude-sonnet',
     name: 'Claude Sonnet',
     providerId: 'anthropic',
-    group: 'Anthropic'
+    group: 'Anthropic',
+    capabilities: []
   } as TestModel | undefined,
   messages: [] as never[],
   activeExecutions: [] as never[],
@@ -229,7 +232,8 @@ describe('HomeWindow', () => {
       modelId: 'claude-sonnet',
       name: 'Claude Sonnet',
       providerId: 'anthropic',
-      group: 'Anthropic'
+      group: 'Anthropic',
+      capabilities: []
     }
     state.sendMessage.mockClear()
     state.stopChat.mockClear()

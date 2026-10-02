@@ -13,14 +13,21 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
+  Input,
   InfoTooltip,
   Popover,
   PopoverContent,
   PopoverTrigger,
   RowFlex,
   SegmentedControl,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Switch
 } from '@cherrystudio/ui'
+import { dataApiService } from '@data/DataApiService'
 import { usePreference } from '@data/hooks/usePreference'
 import ModelAvatar from '@renderer/components/Avatar/ModelAvatar'
 import { ModelSettingsNavigation } from '@renderer/components/ModelSettingsNavigation'
@@ -49,6 +56,11 @@ const QuickAssistantSettings: FC = () => {
   )
   const [readClipboardAtStartup, setReadClipboardAtStartup] = usePreference(
     'feature.quick_assistant.read_clipboard_at_startup'
+  )
+  const [keepHistory, setKeepHistory] = usePreference('feature.quick_assistant.keep_history')
+  const [historyLimit, setHistoryLimit] = usePreference('feature.quick_assistant.history_limit')
+  const [quickAssistantReasoningEffort, setQuickAssistantReasoningEffort] = usePreference(
+    'feature.quick_assistant.reasoning_effort'
   )
   const [, setTray] = usePreference('app.tray.enabled')
   const [quickAssistantId, setQuickAssistantId] = usePreference('feature.quick_assistant.assistant_id')
@@ -104,6 +116,24 @@ const QuickAssistantSettings: FC = () => {
   const handleClickReadClipboardAtStartup = async (checked: boolean) => {
     await setReadClipboardAtStartup(checked)
     void ipcApi.request('quick_assistant.close')
+  }
+
+  const handleHistoryLimitChange = (value: string) => {
+    const parsed = Number.parseInt(value, 10)
+    if (Number.isFinite(parsed)) void setHistoryLimit(Math.min(100, Math.max(1, parsed)))
+  }
+
+  const handleDeleteAllHistory = async () => {
+    if (!window.confirm(t('settings.quickAssistant.history_delete_confirm'))) return
+    try {
+      const response = await dataApiService.get('/topics', { query: { source: 'quick_assistant', limit: 100 } })
+      for (const topic of response.items) {
+        await dataApiService.delete(`/topics/${topic.id}`, { query: { permanent: true } })
+      }
+      toast.success(t('settings.quickAssistant.history_deleted'))
+    } catch {
+      toast.error(t('settings.quickAssistant.history_delete_failed'))
+    }
   }
 
   return (
@@ -241,16 +271,85 @@ const QuickAssistantSettings: FC = () => {
               />
             )}
           </SettingRow>
+          {!isAssistantMode && (
+            <>
+              <SettingDivider />
+              <SettingRow>
+                <SettingRowTitle>{t('settings.models.quick_assistant_reasoning_effort')}</SettingRowTitle>
+                <Select
+                  value={quickAssistantReasoningEffort ?? 'default'}
+                  onValueChange={(value) => void setQuickAssistantReasoningEffort(value)}>
+                  <SelectTrigger className="w-40">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {QUICK_ASSISTANT_EFFORT_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {t(option.labelKey)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </SettingRow>
+            </>
+          )}
+        </SettingGroup>
+      )}
+      {enableQuickAssistant && (
+        <SettingGroup theme={theme}>
+          <SettingTitle>{t('settings.quickAssistant.history_title')}</SettingTitle>
+          <SettingDivider />
+          <SettingRow>
+            <SettingRowTitle>{t('settings.quickAssistant.keep_history')}</SettingRowTitle>
+            <Switch checked={keepHistory} onCheckedChange={(checked) => void setKeepHistory(checked)} />
+          </SettingRow>
+          {keepHistory && (
+            <>
+              <SettingDivider />
+              <SettingRow>
+                <SettingRowTitle>{t('settings.quickAssistant.history_limit')}</SettingRowTitle>
+                <Input
+                  type="number"
+                  min={1}
+                  max={100}
+                  className="w-20"
+                  value={String(historyLimit)}
+                  onChange={(event) => handleHistoryLimitChange(event.target.value)}
+                />
+              </SettingRow>
+              <SettingDivider />
+              <SettingRow>
+                <SettingRowTitle>{t('settings.quickAssistant.history_delete_all')}</SettingRowTitle>
+                <Button variant="destructive" size="sm" onClick={() => void handleDeleteAllHistory()}>
+                  {t('settings.quickAssistant.history_delete_all')}
+                </Button>
+              </SettingRow>
+            </>
+          )}
         </SettingGroup>
       )}
       {enableQuickAssistant && (
         <div className="mx-auto mt-5 h-115 w-full overflow-hidden rounded-[10px] border-[0.5px] border-border bg-background">
-          <HomeWindow draggable={false} />
+          {/* Preview must never persist its test conversations into history. */}
+          <HomeWindow draggable={false} preview />
         </div>
       )}
     </SettingsContentColumn>
   )
 }
+
+const QUICK_ASSISTANT_EFFORT_OPTIONS = [
+  { value: 'default', labelKey: 'models.reasoning_effort.value.default' },
+  { value: 'none', labelKey: 'models.reasoning_effort.value.none' },
+  { value: 'minimal', labelKey: 'models.reasoning_effort.value.minimal' },
+  { value: 'low', labelKey: 'models.reasoning_effort.value.low' },
+  { value: 'medium', labelKey: 'models.reasoning_effort.value.medium' },
+  { value: 'high', labelKey: 'models.reasoning_effort.value.high' },
+  { value: 'xhigh', labelKey: 'models.reasoning_effort.value.xhigh' },
+  { value: 'max', labelKey: 'models.reasoning_effort.value.max' },
+  { value: 'ultra', labelKey: 'models.reasoning_effort.value.ultra' },
+  { value: 'auto', labelKey: 'models.reasoning_effort.value.auto' }
+] as const
 
 const AssistantOption = ({
   assistant,

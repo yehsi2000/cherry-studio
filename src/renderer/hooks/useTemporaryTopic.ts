@@ -54,8 +54,8 @@ export interface UseTemporaryTopicResult {
   ready: boolean
   /** Drop the current topic and lease a fresh one. No-op when disabled. */
   reset: () => void
-  /** Move the temporary topic (plus its messages) into SQLite. */
-  persist: (initialName?: string) => Promise<void>
+  /** Move the temporary topic (plus its messages) into SQLite, optionally seeded with a title and source. */
+  persist: (options?: { name?: string; source?: '' | 'quick_assistant' }) => Promise<void>
 }
 
 export function useTemporaryTopic(options: UseTemporaryTopicOptions = {}): UseTemporaryTopicResult {
@@ -113,26 +113,26 @@ export function useTemporaryTopic(options: UseTemporaryTopicOptions = {}): UseTe
     setEpoch((n) => n + 1)
   }, [])
 
-  const persist = useCallback(async (initialName?: string) => {
+  const persist = useCallback(async (options?: { name?: string; source?: '' | 'quick_assistant' }) => {
     const id = activeIdRef.current
     if (!id) return
-    await dataApiService.post(`/temporary/topics/${id}/persist`, { body: {} })
-    // Clear before unmount so cleanup skips the now-pointless DELETE.
+    // Release ownership synchronously so the unmount cleanup can never race the
+    // save with a DELETE; a failed save hands ownership back for later cleanup.
     activeIdRef.current = null
-    logger.debug('Persisted temporary topic', { topicId: id })
-
-    const trimmed = initialName?.trim()
-    if (trimmed) {
-      try {
-        await dataApiService.patch(`/topics/${id}`, {
-          body: {
-            name: trimmed.slice(0, clampSurrogateBoundary(trimmed, TEMPORARY_TOPIC_NAME_MAX_LENGTH)),
-            isNameManuallyEdited: false
-          }
-        })
-      } catch (err) {
-        logger.warn('Failed to seed placeholder topic name', err as Error)
-      }
+    const trimmed = options?.name?.trim()
+    try {
+      await dataApiService.post(`/temporary/topics/${id}/persist`, {
+        body: {
+          ...(trimmed
+            ? { name: trimmed.slice(0, clampSurrogateBoundary(trimmed, TEMPORARY_TOPIC_NAME_MAX_LENGTH)) }
+            : {}),
+          source: options?.source ?? ''
+        }
+      })
+      logger.debug('Persisted temporary topic', { topicId: id })
+    } catch (err) {
+      activeIdRef.current = id
+      throw err
     }
   }, [])
 

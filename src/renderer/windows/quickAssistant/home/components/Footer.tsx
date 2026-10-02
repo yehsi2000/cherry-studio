@@ -1,4 +1,4 @@
-import { ArrowLeft, CircleArrowLeft, Copy, Loader2, Pin } from 'lucide-react'
+import { ArrowLeft, CircleArrowLeft, Copy, History, Loader2, Pin } from 'lucide-react'
 import type { ButtonHTMLAttributes, FC } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { useTranslation } from 'react-i18next'
@@ -14,6 +14,7 @@ interface FooterProps {
   clearClipboard?: () => void
   onEsc: () => void
   onCopy?: () => void
+  onHistory?: () => void
 }
 
 const Footer: FC<FooterProps> = ({
@@ -24,7 +25,8 @@ const Footer: FC<FooterProps> = ({
   onEsc,
   setIsPinned,
   isPinned,
-  onCopy
+  onCopy,
+  onHistory
 }) => {
   const { t } = useTranslation()
 
@@ -71,21 +73,34 @@ const Footer: FC<FooterProps> = ({
           </FooterAction>
         )}
       </div>
-      <button
-        type="button"
-        onClick={() => setIsPinned(!isPinned)}
-        className="nodrag mr-1 flex items-center text-foreground transition-colors"
-        aria-pressed={isPinned}
-        aria-label={t('quickAssistant.tooltip.pin')}>
-        <Tooltip placement="left" content={t('quickAssistant.tooltip.pin')} delay={800}>
-          <Pin
-            size={14}
-            className={
-              isPinned ? 'rotate-[40deg] text-primary transition-transform' : 'text-foreground transition-transform'
-            }
-          />
-        </Tooltip>
-      </button>
+      <div className="flex items-center gap-1">
+        {route === 'home' && onHistory && (
+          <button
+            type="button"
+            onClick={onHistory}
+            className="nodrag flex items-center text-foreground transition-colors"
+            aria-label={t('quickAssistant.history.title')}>
+            <Tooltip placement="left" content={t('quickAssistant.history.title')} delay={800}>
+              <History size={14} />
+            </Tooltip>
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => setIsPinned(!isPinned)}
+          className="nodrag mr-1 flex items-center text-foreground transition-colors"
+          aria-pressed={isPinned}
+          aria-label={t('quickAssistant.tooltip.pin')}>
+          <Tooltip placement="left" content={t('quickAssistant.tooltip.pin')} delay={800}>
+            <Pin
+              size={14}
+              className={
+                isPinned ? 'rotate-[40deg] text-primary transition-transform' : 'text-foreground transition-transform'
+              }
+            />
+          </Tooltip>
+        </button>
+      </div>
     </div>
   )
 }
