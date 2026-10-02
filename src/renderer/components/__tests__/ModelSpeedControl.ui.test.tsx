@@ -13,6 +13,23 @@ vi.mock('react-i18next', () => ({
 }))
 
 vi.mock('@cherrystudio/ui', () => ({
+  Badge: ({
+    children,
+    variant,
+    className,
+    ...props
+  }: {
+    children: ReactNode
+    variant?: string
+    className?: string
+  }) => {
+    void variant
+    return (
+      <span className={className} {...props}>
+        {children}
+      </span>
+    )
+  },
   Button: (props: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; size?: string }) => {
     const buttonProps = { ...props }
     delete buttonProps.variant
@@ -532,5 +549,22 @@ describe('ModelSpeedControl service tiers', () => {
       'data-value',
       'standard'
     )
+  })
+})
+
+describe('ModelSpeedControl effort vocabulary provenance', () => {
+  it('marks the vocabulary as user-defined when an override is set', () => {
+    render(
+      <ControlledSpeedControl
+        model={{ ...codexModel, reasoningEffortOverride: { choices: ['low', 'high'], defaultChoice: 'high' } }}
+        initialEffort="high"
+      />
+    )
+    expect(screen.getByText('models.reasoning_effort.user_override_badge')).toBeInTheDocument()
+  })
+
+  it('shows no provenance marker for the catalog vocabulary', () => {
+    render(<ControlledSpeedControl model={{ ...codexModel, reasoningEffortOverride: null }} initialEffort="high" />)
+    expect(screen.queryByText('models.reasoning_effort.user_override_badge')).not.toBeInTheDocument()
   })
 })

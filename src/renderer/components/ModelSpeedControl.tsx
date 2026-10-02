@@ -10,7 +10,16 @@ import { ChevronDown, Gauge, Zap } from 'lucide-react'
 import { type ComponentProps, type ReactNode, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Button, Popover, PopoverContent, PopoverTrigger, RadioGroup, RadioGroupItem, Slider } from '@cherrystudio/ui'
+import {
+  Badge,
+  Button,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  RadioGroup,
+  RadioGroupItem,
+  Slider
+} from '@cherrystudio/ui'
 import type { ThinkingOption } from '@renderer/types/reasoning'
 import { cn } from '@renderer/utils/style'
 import { deriveThinkingOptions } from '@shared/ai/reasoning'
@@ -251,6 +260,12 @@ export function ModelSpeedControl({
                   className="truncate font-medium text-foreground">
                   {effortLabel}
                 </span>
+                {model.reasoningEffortOverride ? (
+                  // Provenance marker: the visible vocabulary is user-authored, not catalog-projected.
+                  <Badge variant="secondary" className="h-4 shrink-0 px-1.5 text-[10px]">
+                    {t('models.reasoning_effort.user_override_badge')}
+                  </Badge>
+                ) : null}
               </div>
             ) : (
               <span className="text-muted-foreground">{t('agent.speed.label')}</span>

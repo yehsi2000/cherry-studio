@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { CURRENCY, type Model } from '@shared/data/types/model'
+import { CURRENCY, type Model, type UserReasoningEffortOverride } from '@shared/data/types/model'
 
 import EditModelDrawer from '../EditModelDrawer'
 
@@ -66,10 +66,13 @@ vi.mock('@cherrystudio/ui', async (importOriginal) => {
     SelectTrigger: ({ children, ...props }: any) => <div {...props}>{children}</div>,
     SelectValue: () => null,
     SelectContent: ({ children }: any) => <div>{children}</div>,
-    SelectItem: ({ children, value }: any) => {
+    SelectItem: ({ children, value, ...props }: any) => {
       const { onValueChange } = React.use(SelectContext)
       return (
-        <button type="button" aria-label={`currency-${value}`} onClick={() => onValueChange?.(value)}>
+        <button
+          type="button"
+          aria-label={props['aria-label'] ?? `currency-${value}`}
+          onClick={() => onValueChange?.(value)}>
           {children}
         </button>
       )
@@ -482,5 +485,130 @@ describe('EditModelDrawer', () => {
       perImage: { price: 0.04, unit: 'image' },
       perMinute: { price: 0.2 }
     })
+  })
+})
+
+function makeReasoningModel(
+  selectableEfforts: string[],
+  reasoningEffortOverride?: UserReasoningEffortOverride | null
+): Model {
+  return {
+    ...makePricingModel(),
+    reasoning: { selectableEfforts },
+    ...(reasoningEffortOverride !== undefined ? { reasoningEffortOverride } : {})
+  } as unknown as Model
+}
+
+describe('EditModelDrawer reasoning effort choices', () => {
+  it('hides the effort editor for a model without reasoning', () => {
+    render(<EditModelDrawer providerId="openai" open onClose={vi.fn()} model={makePricingModel()} />)
+    expect(screen.queryByText('models.reasoning_effort.label')).not.toBeInTheDocument()
+  })
+
+  it('saves the checked choices as a single override patch on Apply', async () => {
+    const user = userEvent.setup()
+    render(<EditModelDrawer providerId="openai" open onClose={vi.fn()} model={makeReasoningModel(['low', 'high'])} />)
+
+    await user.click(screen.getByRole('radio', { name: 'models.reasoning_effort.mode.custom' }))
+    await user.click(screen.getByRole('checkbox', { name: 'models.reasoning_effort.value.none' }))
+    expect(updateModelMock).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'models.reasoning_effort.apply' }))
+    expect(updateModelMock).toHaveBeenCalledTimes(1)
+    expect(updateModelMock).toHaveBeenCalledWith('openai', 'claude-4-sonnet', {
+      reasoningEffortOverride: { choices: ['none', 'low', 'high'] }
+    })
+  })
+
+  it('saves the chosen default when it is one of the checked choices', async () => {
+    const user = userEvent.setup()
+    render(<EditModelDrawer providerId="openai" open onClose={vi.fn()} model={makeReasoningModel(['low', 'high'])} />)
+
+    await user.click(screen.getByRole('radio', { name: 'models.reasoning_effort.mode.custom' }))
+    await user.click(screen.getByRole('button', { name: 'models.reasoning_effort.value.low' }))
+    await user.click(screen.getByRole('button', { name: 'models.reasoning_effort.apply' }))
+
+    expect(updateModelMock).toHaveBeenCalledWith('openai', 'claude-4-sonnet', {
+      reasoningEffortOverride: { choices: ['low', 'high'], defaultChoice: 'low' }
+    })
+  })
+
+  it('keeps at least one choice selected', async () => {
+    const user = userEvent.setup()
+    render(
+      <EditModelDrawer
+        providerId="openai"
+        open
+        onClose={vi.fn()}
+        model={makeReasoningModel(['low', 'high'], { choices: ['low', 'high'] })}
+      />
+    )
+
+    await user.click(screen.getByRole('checkbox', { name: 'models.reasoning_effort.value.high' }))
+    const lastChoice = screen.getByRole('checkbox', { name: 'models.reasoning_effort.value.low' })
+    expect(lastChoice).toBeDisabled()
+    await user.click(lastChoice)
+    expect(lastChoice).toBeChecked()
+
+    await user.click(screen.getByRole('button', { name: 'models.reasoning_effort.apply' }))
+    expect(updateModelMock).toHaveBeenCalledTimes(1)
+    expect(updateModelMock).toHaveBeenCalledWith('openai', 'claude-4-sonnet', {
+      reasoningEffortOverride: { choices: ['low'] }
+    })
+  })
+
+  it('offers only checked values as the default choice and drops a default whose choice leaves', async () => {
+    const user = userEvent.setup()
+    render(
+      <EditModelDrawer
+        providerId="openai"
+        open
+        onClose={vi.fn()}
+        model={makeReasoningModel(['low', 'high'], { choices: ['low', 'high'], defaultChoice: 'high' })}
+      />
+    )
+
+    expect(screen.queryByRole('button', { name: 'models.reasoning_effort.value.max' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('checkbox', { name: 'models.reasoning_effort.value.high' }))
+    await user.click(screen.getByRole('button', { name: 'models.reasoning_effort.apply' }))
+    expect(updateModelMock).toHaveBeenCalledWith('openai', 'claude-4-sonnet', {
+      reasoningEffortOverride: { choices: ['low'] }
+    })
+  })
+
+  it('restores the catalog vocabulary on reset without a second save from Apply', async () => {
+    const user = userEvent.setup()
+    render(
+      <EditModelDrawer
+        providerId="openai"
+        open
+        onClose={vi.fn()}
+        model={makeReasoningModel(['low', 'high'], { choices: ['low', 'high'] })}
+      />
+    )
+
+    await user.click(screen.getByRole('button', { name: 'models.reasoning_effort.reset' }))
+    expect(updateModelMock).toHaveBeenCalledTimes(1)
+    expect(updateModelMock).toHaveBeenCalledWith('openai', 'claude-4-sonnet', { reasoningEffortOverride: null })
+
+    await user.click(screen.getByRole('button', { name: 'models.reasoning_effort.apply' }))
+    expect(updateModelMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends null when catalog mode is applied', async () => {
+    const user = userEvent.setup()
+    render(
+      <EditModelDrawer
+        providerId="openai"
+        open
+        onClose={vi.fn()}
+        model={makeReasoningModel(['low'], { choices: ['low'], defaultChoice: 'low' })}
+      />
+    )
+
+    await user.click(screen.getByRole('radio', { name: 'models.reasoning_effort.mode.catalog' }))
+    await user.click(screen.getByRole('button', { name: 'models.reasoning_effort.apply' }))
+    expect(updateModelMock).toHaveBeenCalledWith('openai', 'claude-4-sonnet', { reasoningEffortOverride: null })
   })
 })

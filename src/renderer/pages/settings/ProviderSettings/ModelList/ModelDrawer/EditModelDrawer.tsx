@@ -9,7 +9,12 @@ import { useProvider } from '@renderer/hooks/useProvider'
 import { toast } from '@renderer/services/toast'
 import { getDefaultGroupName } from '@renderer/utils/naming'
 import type { UpdateModelDto } from '@shared/data/api/schemas/models'
-import { type EndpointType, type Model } from '@shared/data/types/model'
+import {
+  type EndpointType,
+  type Model,
+  type ReasoningParamsOverride,
+  type UserReasoningEffortOverride
+} from '@shared/data/types/model'
 import { parseUniqueModelId } from '@shared/data/types/model'
 
 import ProviderActions from '../../primitives/ProviderActions'
@@ -36,6 +41,8 @@ import {
   type ModelPurposeFields
 } from './modelPurpose'
 import { ModelPurposeFields as ModelPurposeFieldsControl } from './ModelPurposeFields'
+import { ModelReasoningEffortFields } from './ModelReasoningEffortFields'
+import { ModelReasoningParamsFields } from './ModelReasoningParamsFields'
 import type {
   ModelCapabilityToggle,
   ModelClassificationState,
@@ -332,6 +339,36 @@ export default function EditModelDrawer({ providerId, open, model: modelProp, on
     autoSave({ classification: nextClassification })
   }, [autoSave, savedClassification])
 
+  // The effort-vocabulary editor commits one validated patch per Apply instead
+  // of riding the auto-save queue, so no half-edited list is ever persisted.
+  const handleReasoningEffortApply = useCallback(
+    (override: UserReasoningEffortOverride | null) => {
+      if (!model) {
+        return
+      }
+      const { modelId } = parseUniqueModelId(model.id)
+      void updateModel(model.providerId ?? providerId, modelId, { reasoningEffortOverride: override }).catch(() =>
+        toast.error(t('common.error'))
+      )
+    },
+    [model, providerId, t, updateModel]
+  )
+
+  // The advanced params carry provider-supplied values, so save failures show
+  // the error as-is (a rejection is the provider's own answer).
+  const handleReasoningParamsApply = useCallback(
+    (params: ReasoningParamsOverride | null) => {
+      if (!model) {
+        return
+      }
+      const { modelId } = parseUniqueModelId(model.id)
+      void updateModel(model.providerId ?? providerId, modelId, { reasoningParamsOverride: params }).catch((err) =>
+        toast.error(err instanceof Error ? err.message : t('common.error'))
+      )
+    },
+    [model, providerId, t, updateModel]
+  )
+
   if (!provider || !model) {
     return <ProviderSettingsDrawer open={open} onClose={onClose} title={t('models.edit')} />
   }
@@ -464,6 +501,25 @@ export default function EditModelDrawer({ providerId, open, model: modelProp, on
                   onMaxInputTokensCommit={(maxInputTokens) => autoSave({ maxInputTokens })}
                   onMaxOutputTokensChange={setMaxOutputTokens}
                   onMaxOutputTokensCommit={(maxOutputTokens) => autoSave({ maxOutputTokens })}
+                />
+              </div>
+
+              {model.reasoning ? (
+                <div className={drawerClasses.sectionCard}>
+                  <ModelReasoningEffortFields
+                    key={`${providerId}:${model.id}`}
+                    override={model.reasoningEffortOverride}
+                    effectiveChoices={model.reasoning.selectableEfforts}
+                    onApply={handleReasoningEffortApply}
+                  />
+                </div>
+              ) : null}
+
+              <div className={drawerClasses.sectionCard}>
+                <ModelReasoningParamsFields
+                  key={`${providerId}:${model.id}:reasoning-params`}
+                  params={model.reasoningParamsOverride}
+                  onApply={handleReasoningParamsApply}
                 />
               </div>
 
