@@ -11,11 +11,31 @@
  * at the type level to keep full alignment with the persistent API surface.
  */
 
+import * as z from 'zod'
+
 import type { Message } from '@shared/data/types/message'
-import type { Topic } from '@shared/data/types/topic'
+import { TopicNameSchema, type Topic } from '@shared/data/types/topic'
 
 import type { CreateMessageDto } from './messages'
 import type { CreateTopicDto } from './topics'
+
+// ============================================================================
+// DTOs
+// ============================================================================
+
+/**
+ * DTO for POST /temporary/topics/:id/persist.
+ *
+ * `source` marks the promoted topic's provenance in `topic.source`; it is
+ * validated here because the persist flow is the only write path for that
+ * column. Retention (newest-N pruning) runs only for 'quick_assistant'.
+ */
+export const PersistTemporaryChatSchema = z.strictObject({
+  /** Optional name for the promoted topic (seed; auto-namers may still rename). */
+  name: z.string().trim().pipe(TopicNameSchema).optional(),
+  source: z.enum(['', 'quick_assistant']).optional()
+})
+export type PersistTemporaryChatDto = z.infer<typeof PersistTemporaryChatSchema>
 
 // ============================================================================
 // Responses
@@ -108,10 +128,12 @@ export type TemporaryChatSchemas = {
    * Persist endpoint — promote a temporary topic to a persistent topic.
    * The topic id does not change; the in-memory copy is discarded on success.
    * @example POST /temporary/topics/abc123/persist
+   * @example POST /temporary/topics/abc123/persist { "source": "quick_assistant" }
    */
   '/temporary/topics/:id/persist': {
     POST: {
       params: { id: string }
+      body?: PersistTemporaryChatDto
       response: PersistTemporaryChatResponse
     }
   }

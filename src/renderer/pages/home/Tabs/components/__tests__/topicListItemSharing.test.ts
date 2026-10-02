@@ -8,6 +8,7 @@ const createTopic = (overrides: Partial<ApiTopic> = {}): ApiTopic => ({
   id: 'topic-1',
   name: 'Topic',
   isNameManuallyEdited: false,
+  source: '',
   orderKey: 'a0',
   lastActivityAt: '2026-01-01T00:00:00.000Z',
   createdAt: '2026-01-01T00:00:00.000Z',

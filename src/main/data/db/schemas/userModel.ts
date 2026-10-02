@@ -20,7 +20,9 @@ import type {
   ModelCapability,
   ParameterSupport,
   ReasoningConfig,
-  RuntimeModelPricing
+  ReasoningParamsOverride,
+  RuntimeModelPricing,
+  UserReasoningEffortOverride
 } from '@shared/data/types/model'
 
 import { createUpdateTimestamps, orderKeyColumns, scopedOrderKeyIndex } from './_columnHelpers'
@@ -86,6 +88,12 @@ export const userModelTable = sqliteTable(
 
     /** Reasoning configuration */
     reasoning: text({ mode: 'json' }).$type<ReasoningConfig>(),
+
+    /** User effort vocabulary override; null inherits the catalog projection */
+    reasoningEffortOverride: text({ mode: 'json' }).$type<UserReasoningEffortOverride | null>(),
+
+    /** Advanced reasoning wire params; null injects nothing */
+    reasoningParamsOverride: text({ mode: 'json' }).$type<ReasoningParamsOverride | null>(),
 
     /** Parameter support */
     parameters: text({ mode: 'json' }).$type<ParameterSupport>(),

@@ -189,6 +189,27 @@
       "when": 1790242863366,
       "tag": "0026_clammy_the_renegades",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "6",
+      "when": 1790667044038,
+      "tag": "0027_jittery_shooting_star",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "6",
+      "when": 1790678792430,
+      "tag": "0028_loving_captain_flint",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1790679183072,
+      "tag": "0029_calm_kronos",
+      "breakpoints": true
     }
   ],
   "version": "7"

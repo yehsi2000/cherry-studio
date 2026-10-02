@@ -82,6 +82,16 @@ describe('topicHandlers', () => {
     })
   })
 
+  describe('GET /topics', () => {
+    it('forwards the source filter to the list query', async () => {
+      listByCursorMock.mockResolvedValueOnce({ items: [], nextCursor: null })
+
+      await topicHandlers['/topics'].GET({ query: { source: 'quick_assistant' } } as never)
+
+      expect(listByCursorMock).toHaveBeenCalledWith(expect.objectContaining({ source: 'quick_assistant' }))
+    })
+  })
+
   describe('/topics/latest', () => {
     it('wraps the latest topic from TopicService', async () => {
       const topic = { id: 'topic-latest' }

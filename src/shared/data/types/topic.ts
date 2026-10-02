@@ -33,6 +33,12 @@ export const TopicSchema = z.strictObject({
   activeNodeId: z.string().optional(),
   /** Container-level OTel trace id */
   traceId: TraceIdSchema.optional(),
+  /**
+   * Provenance of the topic: '' = standard chat, 'quick_assistant' = quick
+   * assistant temporary chat promoted to a permanent topic. Read-only for
+   * clients: only the temporary-chat persist flow may write it.
+   */
+  source: z.string(),
   /** Global fractional-indexing order key. */
   orderKey: z.string(),
   /** Last real conversation activity timestamp (ISO string). */

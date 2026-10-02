@@ -92,6 +92,25 @@ describe('createCustomParamsFetch', () => {
     })
   })
 
+  it('merges nested custom leaves beside SDK-written siblings, SDK leaf winning on conflicts', async () => {
+    const innerFetch = createInnerFetch()
+    const wrappedFetch = createCustomParamsFetch(innerFetch, {
+      reasoning: { effort: 'none', exclude: true },
+      store: false
+    })
+
+    await wrappedFetch('https://example.com', {
+      method: 'POST',
+      body: JSON.stringify({ reasoning: { effort: 'low', summary: 'auto' }, store: true })
+    })
+
+    const forwardedInit = innerFetch.mock.calls[0][1] as RequestInit
+    expect(JSON.parse(forwardedInit.body as string)).toEqual({
+      reasoning: { effort: 'low', exclude: true, summary: 'auto' },
+      store: true
+    })
+  })
+
   it('reuses wrappers for the same inner fetch and serialized custom parameters', () => {
     const innerFetch = createInnerFetch()
     const first = createCustomParamsFetch(innerFetch, { enable_search: true })

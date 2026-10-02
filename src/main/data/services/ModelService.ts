@@ -33,6 +33,11 @@ import {
 import { isProviderIdentityAvailable, providerService } from '@data/services/ProviderService'
 import { insertManyWithOrderKey } from '@data/services/utils/orderKey'
 import { loggerService } from '@logger'
+import {
+  applyReasoningEffortOverride,
+  findReasoningParamsConflicts,
+  reasoningEndpointForFormat
+} from '@shared/ai/reasoning'
 import { DataApiErrorFactory } from '@shared/data/api/errors'
 import type { CreateModelDto, ListModelsQuery, UpdateModelDto } from '@shared/data/api/schemas/models'
 import {
@@ -298,6 +303,8 @@ export const UPDATE_MODEL_FIELD_MAP: Array<keyof UpdateModelDto | [keyof UpdateM
   'maxInputTokens',
   'maxOutputTokens',
   'pricing',
+  'reasoningEffortOverride',
+  'reasoningParamsOverride',
   'isEnabled',
   'isHidden',
   'isDeprecated',
@@ -324,6 +331,8 @@ function dtoToNewUserModel(dto: CreateModelDto): NewUserModelInput {
     maxOutputTokens: dto.maxOutputTokens ?? null,
     supportsStreaming: dto.supportsStreaming ?? true,
     reasoning: null,
+    reasoningEffortOverride: null,
+    reasoningParamsOverride: null,
     parameters: dto.parameterSupport ?? null,
     pricing: dto.pricing ?? null,
     isEnabled: true,
@@ -389,6 +398,8 @@ function presetDeltaToNewUserModel(
     maxOutputTokens: fields.has('maxOutputTokens') ? (dto.maxOutputTokens ?? null) : null,
     supportsStreaming: fields.has('supportsStreaming') ? (dto.supportsStreaming ?? null) : null,
     reasoning: null,
+    reasoningEffortOverride: null,
+    reasoningParamsOverride: null,
     parameters: fields.has('parameters') ? (dto.parameterSupport ?? null) : null,
     pricing: fields.has('pricing') ? (dto.pricing ?? null) : null,
     isEnabled: true,
@@ -450,7 +461,12 @@ function customRowToRuntimeModel(row: UserModelRow): Model {
     supportsStreaming: row.supportsStreaming,
     // Strip legacy fields (notably `type`) and materialize the runtime-only
     // selection list until registry enrichment projects the active profile.
-    reasoning: reasoning ? { ...reasoning, selectableEfforts: reasoning.selectableEfforts ?? [] } : undefined,
+    reasoning: applyReasoningEffortOverride(
+      reasoning ? { ...reasoning, selectableEfforts: reasoning.selectableEfforts ?? [] } : undefined,
+      row.reasoningEffortOverride
+    ),
+    reasoningEffortOverride: row.reasoningEffortOverride ?? undefined,
+    reasoningParamsOverride: row.reasoningParamsOverride ?? undefined,
     parameterSupport: (row.parameters ?? undefined) as RuntimeParameterSupport | undefined,
     pricing: row.pricing ?? undefined,
     isEnabled: row.isEnabled,
@@ -470,7 +486,10 @@ function applyStoredModelState(model: Model, row: UserModelRow): Model {
     isEnabled: row.isEnabled,
     isHidden: row.isHidden,
     isDeprecated: row.isDeprecated,
-    notes: row.notes ?? undefined
+    notes: row.notes ?? undefined,
+    reasoning: applyReasoningEffortOverride(model.reasoning, row.reasoningEffortOverride),
+    reasoningEffortOverride: row.reasoningEffortOverride ?? undefined,
+    reasoningParamsOverride: row.reasoningParamsOverride ?? undefined
   }
 }
 
@@ -540,12 +559,59 @@ class ModelService {
     return dtoValues
   }
 
+  /**
+   * Advanced reasoning params may only write fields the standard reasoning
+   * controls never reach — two writers on one wire field is a rejected save,
+   * never a silent precedence pick. A registry lookup failure cannot prove a
+   * conflict, so the save goes through and the provider still sees the request.
+   */
+  private assertNoReasoningParamsConflict(
+    tx: Pick<DbType, 'select'>,
+    existing: UserModelRow,
+    dto: UpdateModelDto
+  ): void {
+    let conflicts: string[] = []
+    try {
+      const context = providerService
+        .getReasoningContextsByProviderIdsTx(tx, [existing.providerId])
+        .get(existing.providerId)
+      if (!context) return
+      const { reasoningProfile } = providerRegistryService.resolveModel(context, existing.modelId)
+      const projected = reasoningProfile.support
+        ? projectRuntimeReasoning(reasoningProfile.support, reasoningProfile.wire)
+        : undefined
+      const effortOverride =
+        dto.reasoningEffortOverride !== undefined ? dto.reasoningEffortOverride : existing.reasoningEffortOverride
+      conflicts = findReasoningParamsConflicts(dto.reasoningParamsOverride ?? {}, {
+        reasoning: applyReasoningEffortOverride(projected, effortOverride ?? undefined),
+        wire: reasoningProfile.wire,
+        endpointType: reasoningEndpointForFormat(reasoningProfile.format)
+      })
+    } catch (error) {
+      logger.warn('Reasoning params conflict lookup failed; allowing the advanced params', {
+        modelId: existing.id,
+        error
+      })
+      return
+    }
+    if (conflicts.length > 0) {
+      throw DataApiErrorFactory.invalidOperation(
+        'update model',
+        `advanced reasoning params collide with reasoning controls: ${conflicts.join(', ')}`
+      )
+    }
+  }
+
   private buildUpdatesTx(
     tx: Pick<DbType, 'select'>,
     existing: UserModelRow,
     dto: UpdateModelDto
   ): Partial<InsertUserModelRow> {
     const updates: Partial<InsertUserModelRow> = {}
+
+    if (dto.reasoningParamsOverride) {
+      this.assertNoReasoningParamsConflict(tx, existing, dto)
+    }
     const hasPresetDeltaField = (Object.keys(dto) as (keyof UpdateModelDto)[])
       .map(dtoKeyToDbKey)
       .some(isPresetDeltaField)
@@ -820,7 +886,7 @@ class ModelService {
             declaredReasoning: model.capabilities.includes(MODEL_CAPABILITY.REASONING)
           })
         }
-        if (reasoning) updates.reasoning = reasoning
+        if (reasoning) updates.reasoning = applyReasoningEffortOverride(reasoning, row.reasoningEffortOverride)
         else if (model.reasoning) updates.reasoning = undefined
         return Object.keys(updates).length > 0 ? { ...model, ...updates } : model
       } catch (error) {

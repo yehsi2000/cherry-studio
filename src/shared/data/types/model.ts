@@ -36,6 +36,7 @@ import {
   MODEL_CAPABILITY,
   objectValues,
   REASONING_EFFORT,
+  REASONING_WIRE_TARGETS,
   ReasoningControlSchema,
   SERVER_TOOL
 } from '@cherrystudio/provider-registry'
@@ -261,6 +262,69 @@ export const RuntimeReasoningSchema = ReasoningConfigSchema.required({ selectabl
 
 export type RuntimeReasoning = z.infer<typeof RuntimeReasoningSchema>
 
+/**
+ * User-authored effort vocabulary for one model. When present it replaces the
+ * catalog-projected `selectableEfforts`; `null` restores the catalog list. The
+ * app never validates the choices against the provider — a rejected value
+ * surfaces as the provider's own error.
+ */
+export const UserReasoningEffortOverrideSchema = z
+  .object({
+    choices: z.array(ReasoningEffortSchema).min(1),
+    defaultChoice: ReasoningEffortSchema.optional()
+  })
+  .refine((override) => new Set(override.choices).size === override.choices.length, {
+    message: 'choices must not contain duplicates',
+    path: ['choices']
+  })
+  .refine((override) => override.defaultChoice === undefined || override.choices.includes(override.defaultChoice), {
+    message: 'defaultChoice must be one of choices',
+    path: ['defaultChoice']
+  })
+export type UserReasoningEffortOverride = z.infer<typeof UserReasoningEffortOverrideSchema>
+
+const REASONING_WIRE_TARGET_SET: ReadonlySet<string> = new Set(REASONING_WIRE_TARGETS)
+
+/**
+ * Dotted paths of every terminal value in an advanced reasoning params object.
+ * Only plain objects nest; anything else (scalar, array, null) is terminal.
+ */
+export function collectReasoningParamLeafPaths(
+  params: Record<string, unknown>,
+  prefix = ''
+): { path: string; value: unknown }[] {
+  const leaves: { path: string; value: unknown }[] = []
+  for (const [key, value] of Object.entries(params)) {
+    const path = prefix ? `${prefix}.${key}` : key
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      leaves.push(...collectReasoningParamLeafPaths(value as Record<string, unknown>, path))
+    } else {
+      leaves.push({ path, value })
+    }
+  }
+  return leaves
+}
+
+/**
+ * Advanced reasoning wire parameters for one model: raw values written to
+ * reviewed reasoning wire leaves only. Value types are preserved exactly — an
+ * integer effort stays a number. This is not a general request-body editor:
+ * anything outside `REASONING_WIRE_TARGETS` (credentials, URLs, headers, …) is
+ * rejected, and whether the provider accepts a value is the provider's call.
+ */
+export const ReasoningParamsOverrideSchema = z.record(z.string(), z.unknown()).superRefine((params, ctx) => {
+  for (const { path, value } of collectReasoningParamLeafPaths(params)) {
+    if (!REASONING_WIRE_TARGET_SET.has(path)) {
+      ctx.addIssue({ code: 'custom', message: `"${path}" is not a reviewed reasoning wire field` })
+    }
+    const isScalar = typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number'
+    if (!isScalar || (typeof value === 'number' && !Number.isFinite(value))) {
+      ctx.addIssue({ code: 'custom', message: `"${path}" must be a finite string, number, or boolean` })
+    }
+  }
+})
+export type ReasoningParamsOverride = z.infer<typeof ReasoningParamsOverrideSchema>
+
 export type ParameterSupport = z.infer<typeof ParameterSupportDbSchema>
 
 /** Runtime form: strict parameter support with more fields (not derivable from DB form — different shape) */
@@ -407,6 +471,10 @@ export const ModelSchema = z.object({
   supportsStreaming: z.boolean(),
   /** Reasoning configuration */
   reasoning: RuntimeReasoningSchema.optional(),
+  /** User effort vocabulary override; `null`/absent means the catalog projection stands */
+  reasoningEffortOverride: UserReasoningEffortOverrideSchema.nullable().optional(),
+  /** Advanced reasoning wire params; `null`/absent means none are injected */
+  reasoningParamsOverride: ReasoningParamsOverrideSchema.nullable().optional(),
   /** Whether this exact provider-model pair supports the provider's Fast transport. */
   supportsFastMode: z.boolean().optional(),
   /** Endpoint-projected request controls safe to expose to the renderer. */

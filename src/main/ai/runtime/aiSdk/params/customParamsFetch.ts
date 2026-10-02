@@ -7,6 +7,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
+/** Recursively overlay SDK-produced body fields on custom params — SDK leaves win. */
+function mergeBodyOverCustomParams(
+  customParams: Record<string, unknown>,
+  body: Record<string, unknown>
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...customParams }
+  for (const [key, value] of Object.entries(body)) {
+    const customValue = merged[key]
+    merged[key] = isRecord(customValue) && isRecord(value) ? mergeBodyOverCustomParams(customValue, value) : value
+  }
+  return merged
+}
+
 /**
  * Keep flat custom parameters for HTTP-body passthrough while excluding
  * provider-scoped option bags that only belong inside `providerOptions`.
@@ -23,7 +36,9 @@ export function selectCustomBodyParameters(
 
 /**
  * Re-inject raw custom parameters after an AI SDK provider has serialized its
- * schema-filtered request body. SDK-produced fields keep higher precedence.
+ * schema-filtered request body. SDK-produced fields keep higher precedence at
+ * every leaf; nested objects merge so custom leaves survive beside SDK-written
+ * siblings (a shallow spread would drop either whole subtree).
  */
 export function createCustomParamsFetch(
   innerFetch: typeof globalThis.fetch,
@@ -58,7 +73,7 @@ export function createCustomParamsFetch(
       if (isRecord(body)) {
         return innerFetch(input, {
           ...init,
-          body: JSON.stringify({ ...customParamsSnapshot, ...body })
+          body: JSON.stringify(mergeBodyOverCustomParams(customParamsSnapshot, body))
         })
       }
     }

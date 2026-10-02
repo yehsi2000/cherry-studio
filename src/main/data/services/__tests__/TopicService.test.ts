@@ -221,6 +221,95 @@ describe('TopicService', () => {
     expect(unlinked.assistantId).toBeUndefined()
   })
 
+  describe('topic.source', () => {
+    it('reads rows created without a source back as "" (pre-migration rows keep the column default)', async () => {
+      await dbh.db
+        .insert(topicTable)
+        .values({ id: 'legacy', name: 'legacy', orderKey: 'a0', createdAt: 1, updatedAt: 1 })
+      const [row] = await dbh.db.select().from(topicTable).where(eq(topicTable.id, 'legacy')).limit(1)
+      expect(row?.source).toBe('')
+    })
+  })
+
+  describe('pruneQuickAssistantHistory', () => {
+    async function seedQuickAssistantTopic(
+      id: string,
+      lastActivityAt: number,
+      extra: Partial<typeof topicTable.$inferInsert> = {}
+    ): Promise<void> {
+      await dbh.db.insert(topicTable).values({
+        id,
+        name: id,
+        source: 'quick_assistant',
+        orderKey: 'a0',
+        lastActivityAt,
+        createdAt: lastActivityAt,
+        updatedAt: lastActivityAt,
+        ...extra
+      })
+      await dbh.db.insert(messageTable).values(
+        withRoot(id, [
+          {
+            id: `msg-${id}`,
+            topicId: id,
+            role: 'user',
+            data: { parts: [{ type: 'text', text: id }] },
+            status: 'success',
+            createdAt: 1,
+            updatedAt: 1
+          }
+        ])
+      )
+    }
+
+    it('keeps the newest N and permanently deletes the overflow with its messages', async () => {
+      const service = new TopicService()
+      await seedQuickAssistantTopic('qa-1', 100)
+      await seedQuickAssistantTopic('qa-2', 200)
+      await seedQuickAssistantTopic('qa-3', 300)
+
+      const deleted = service.pruneQuickAssistantHistory(2)
+
+      expect(deleted).toEqual(['qa-1'])
+      const topics = (await dbh.db.select({ id: topicTable.id }).from(topicTable)).map((r) => r.id)
+      expect(topics.sort()).toEqual(['qa-2', 'qa-3'])
+      const msgTopics = (await dbh.db.select({ topicId: messageTable.topicId }).from(messageTable)).map(
+        (r) => r.topicId
+      )
+      expect(msgTopics).not.toContain('qa-1')
+    })
+
+    it('never deletes pinned, trashed, or non-quick-assistant topics', async () => {
+      const service = new TopicService()
+      await seedQuickAssistantTopic('qa-newest', 600)
+      await seedQuickAssistantTopic('qa-old', 500)
+      await seedQuickAssistantTopic('qa-pinned', 10)
+      await dbh.db.insert(pinTable).values({
+        id: 'pin-qa',
+        entityType: 'topic',
+        entityId: 'qa-pinned',
+        orderKey: 'a0',
+        createdAt: 1,
+        updatedAt: 1
+      })
+      await seedQuickAssistantTopic('qa-trashed', 20, { deletedAt: 20 })
+      await dbh.db.insert(topicTable).values({
+        id: 'std-old',
+        name: 'std-old',
+        source: '',
+        orderKey: 'a1',
+        lastActivityAt: 5,
+        createdAt: 5,
+        updatedAt: 5
+      })
+
+      service.pruneQuickAssistantHistory(1)
+
+      const ids = (await dbh.db.select({ id: topicTable.id }).from(topicTable)).map((r) => r.id).sort()
+      expect(ids).toEqual(['qa-newest', 'qa-pinned', 'qa-trashed', 'std-old'])
+    })
+  })
+
   describe('listByCursor', () => {
     it('filters exact ids across pinned and unpinned sections', async () => {
       const service = new TopicService()
@@ -242,6 +331,24 @@ describe('TopicService', () => {
 
       expect(result.items.map((topic) => topic.id)).toEqual(['pinned', 'unpinned'])
       expect(result.nextCursor).toBeUndefined()
+    })
+
+    it('filters by source exactly across pinned and unpinned sections', async () => {
+      const service = new TopicService()
+      await dbh.db.insert(topicTable).values([
+        { id: 'qa-pinned', name: 'QA pinned', source: 'quick_assistant', orderKey: 'a0', createdAt: 1, updatedAt: 1 },
+        { id: 'qa-unpinned', name: 'QA', source: 'quick_assistant', orderKey: 'a1', createdAt: 1, updatedAt: 1 },
+        { id: 'std-pinned', name: 'Std pinned', source: '', orderKey: 'a2', createdAt: 1, updatedAt: 1 },
+        { id: 'std-unpinned', name: 'Std', source: '', orderKey: 'a3', createdAt: 1, updatedAt: 1 }
+      ])
+      await dbh.db.insert(pinTable).values([
+        { id: 'pin-qa', entityType: 'topic', entityId: 'qa-pinned', orderKey: 'a0', createdAt: 1, updatedAt: 1 },
+        { id: 'pin-std', entityType: 'topic', entityId: 'std-pinned', orderKey: 'a1', createdAt: 1, updatedAt: 1 }
+      ])
+
+      const result = service.listByCursor({ source: 'quick_assistant' })
+
+      expect(result.items.map((topic) => topic.id).sort()).toEqual(['qa-pinned', 'qa-unpinned'])
     })
 
     it('returns all non-deleted topics across assistants ordered by orderKey', async () => {

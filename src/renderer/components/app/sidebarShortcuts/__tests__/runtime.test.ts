@@ -345,6 +345,7 @@ describe('sidebar conversation navigation', () => {
       assistantId: 'assistant-1',
       name: 'Conversation',
       isNameManuallyEdited: false,
+      source: '',
       orderKey: 'a0',
       lastActivityAt: '2026-09-15T00:00:00Z',
       createdAt: '2026-09-15T00:00:00Z',

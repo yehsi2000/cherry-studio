@@ -34,6 +34,7 @@ function fakeTopic(overrides: Partial<Topic> = {}): Topic {
     isNameManuallyEdited: false,
     assistantId: undefined,
     activeNodeId: undefined,
+    source: '',
     orderKey: '',
     lastActivityAt: '2025-01-01T00:00:00.000Z',
     createdAt: '2025-01-01T00:00:00.000Z',
@@ -134,13 +135,28 @@ describe('temporaryChatHandlers', () => {
   })
 
   describe('POST /temporary/topics/:id/persist', () => {
-    it('forwards id and returns PersistTemporaryChatResponse', async () => {
+    it('parses and forwards the persist body to the service', async () => {
       persistMock.mockReturnValue({ topicId: 'tid-123', messageCount: 4 })
       const result = await temporaryChatHandlers['/temporary/topics/:id/persist'].POST(
-        reqEnvelope({ params: { id: 'tid-123' } })
+        reqEnvelope({ params: { id: 'tid-123' }, body: { name: 'Seeded', source: 'quick_assistant' } })
       )
-      expect(persistMock).toHaveBeenCalledWith('tid-123')
+      expect(persistMock).toHaveBeenCalledWith('tid-123', { name: 'Seeded', source: 'quick_assistant' })
       expect(result).toEqual({ topicId: 'tid-123', messageCount: 4 })
+    })
+
+    it('treats a missing body as empty options', async () => {
+      persistMock.mockReturnValue({ topicId: 'tid-123', messageCount: 0 })
+      await temporaryChatHandlers['/temporary/topics/:id/persist'].POST(reqEnvelope({ params: { id: 'tid-123' } }))
+      expect(persistMock).toHaveBeenCalledWith('tid-123', {})
+    })
+
+    it('rejects an unknown source instead of storing it', async () => {
+      await expect(
+        temporaryChatHandlers['/temporary/topics/:id/persist'].POST(
+          reqEnvelope({ params: { id: 'tid-123' }, body: { source: 'bogus' } })
+        )
+      ).rejects.toThrow()
+      expect(persistMock).not.toHaveBeenCalled()
     })
   })
 })

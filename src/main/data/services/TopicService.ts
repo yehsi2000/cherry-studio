@@ -597,6 +597,46 @@ export class TopicService {
     )
   }
 
+  /**
+   * Newest-N retention for quick-assistant history: permanently delete
+   * `source='quick_assistant'` topics beyond the newest `keep`, including
+   * their message rows.
+   *
+   * Pinned and trashed topics are exempt — never deleted and not counted
+   * against `keep` (a pin is an explicit instruction to retain). `keep: 0`
+   * prunes every unprotected quick-assistant topic.
+   */
+  pruneQuickAssistantHistory(keep: number): string[] {
+    const dbService = application.get('DbService')
+    const deletedIds = dbService.withWriteTx((tx) => {
+      const pinnedSubquery = tx.select({ id: pinTable.entityId }).from(pinTable).where(eq(pinTable.entityType, 'topic'))
+      const rows = tx
+        .select({ id: topicTable.id })
+        .from(topicTable)
+        .where(
+          and(
+            eq(topicTable.source, 'quick_assistant'),
+            isNull(topicTable.deletedAt),
+            notInArray(topicTable.id, pinnedSubquery)
+          )
+        )
+        .orderBy(desc(topicTable.lastActivityAt), asc(topicTable.id))
+        .all()
+      return this.purgeManyByIdsTx(
+        tx,
+        rows.slice(Math.max(0, keep)).map((row) => row.id),
+        { targetState: 'active' }
+      )
+    })
+
+    if (deletedIds.length > 0) {
+      this.notifyReadModelChange(deletedIds, 'membership', { deleted: true })
+      pinService.notifyPurged()
+      logger.info('Pruned quick assistant history', { keep, deleted: deletedIds.length })
+    }
+    return deletedIds
+  }
+
   setActiveNode(topicId: string, nodeId: string): { activeNodeId: string } {
     application.get('DbService').withWriteTx((tx) => this.setActiveNodeTx(tx, topicId, nodeId))
     notifyDataApiDataChange([
@@ -682,6 +722,7 @@ export class TopicService {
     const cursor = decodePinnedListCursor(query.cursor, 'topic')
     const search = buildSearchPredicate(query.q)
     const idFilter = query.ids ? inArray(topicTable.id, query.ids) : undefined
+    const sourceFilter = query.source !== undefined ? eq(topicTable.source, query.source) : undefined
     const inTrash = query.inTrash === true
 
     const items: Array<{ topic: Topic; pinOrderKey?: string }> = []
@@ -697,7 +738,7 @@ export class TopicService {
         .select({ topic: topicTable, pinOrderKey: pinTable.orderKey })
         .from(topicTable)
         .innerJoin(pinTable, and(eq(pinTable.entityType, 'topic'), eq(pinTable.entityId, topicTable.id)))
-        .where(and(isNull(topicTable.deletedAt), idFilter, pinAfter, search))
+        .where(and(isNull(topicTable.deletedAt), idFilter, sourceFilter, pinAfter, search))
         .orderBy(asc(pinTable.orderKey), asc(topicTable.id))
         .limit(limit + 1)
         .all()
@@ -755,6 +796,7 @@ export class TopicService {
         and(
           inTrash ? isNotNull(topicTable.deletedAt) : isNull(topicTable.deletedAt),
           idFilter,
+          sourceFilter,
           notInArray(topicTable.id, pinnedSubquery),
           topicAfter,
           search

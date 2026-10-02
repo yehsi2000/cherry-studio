@@ -562,6 +562,7 @@ function createApiTopic(overrides: Partial<ApiTopic> = {}) {
     name: 'Alpha topic',
     isNameManuallyEdited: false,
     assistantId: 'assistant-1',
+    source: '',
     orderKey: 'a',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',

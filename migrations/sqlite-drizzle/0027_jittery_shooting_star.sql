@@ -1,0 +1,1 @@
+ALTER TABLE `user_model` ADD `reasoning_effort_override` text;

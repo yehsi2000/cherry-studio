@@ -21,6 +21,7 @@ import { topicTable } from '@data/db/schemas/topic'
 import { loggerService } from '@logger'
 import { DataApiErrorFactory } from '@shared/data/api/errors'
 import type { CreateMessageDto } from '@shared/data/api/schemas/messages'
+import type { PersistTemporaryChatDto } from '@shared/data/api/schemas/temporaryChats'
 import type { CreateTopicDto } from '@shared/data/api/schemas/topics'
 import type { Message, MessageRole, MessageRuntimeStatsInput, MessageStatus } from '@shared/data/types/message'
 import type { Topic } from '@shared/data/types/topic'
@@ -81,6 +82,8 @@ export class TemporaryChatService {
       isNameManuallyEdited: false,
       assistantId: dto.assistantId,
       activeNodeId: undefined,
+      // Provenance is decided at persist() time; in-memory topics are always ''.
+      source: '',
       // In-memory store has no real ordering — temp topics are scoped per
       // session and never reordered or paginated like persistent ones.
       orderKey: '',
@@ -191,7 +194,7 @@ export class TemporaryChatService {
     return structuredClone(rows).map(rowToMessage)
   }
 
-  persist(topicId: string): { topicId: string; messageCount: number } {
+  persist(topicId: string, dto: PersistTemporaryChatDto = {}): { topicId: string; messageCount: number } {
     // 1. snapshot-and-clear: take the data out of the Maps immediately so that
     // concurrent handlers can't mutate it while the DB transaction is awaiting.
     const topic = this.topics.get(topicId)
@@ -218,7 +221,8 @@ export class TemporaryChatService {
           topicTable,
           {
             id: topic.id,
-            name: topic.name ?? undefined,
+            name: dto.name ?? topic.name ?? undefined,
+            source: dto.source ?? '',
             assistantId,
             lastActivityAt: topic.lastActivityAt,
             createdAt: topic.createdAt,
@@ -281,7 +285,18 @@ export class TemporaryChatService {
       aiUsageRecordService.refreshMessageProjection({ kind: 'chat', id: m.id })
     }
 
-    logger.info('Persisted temporary topic', { topicId, messageCount: msgs.length })
+    // Quick-assistant promotions feed a bounded history. Cleanup is best-effort:
+    // a failure here must never undo the promotion that just succeeded.
+    if ((dto.source ?? '') === 'quick_assistant') {
+      const keep = application.get('PreferenceService').get('feature.quick_assistant.history_limit')
+      try {
+        topicService.pruneQuickAssistantHistory(keep)
+      } catch (err) {
+        logger.warn('Failed to prune quick assistant history after promotion', err as Error)
+      }
+    }
+
+    logger.info('Persisted temporary topic', { topicId, messageCount: msgs.length, source: dto.source ?? '' })
     return { topicId, messageCount: msgs.length }
   }
 

@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest'
 
 import { temporaryChatHandlers } from '@data/api/handlers/temporaryChats'
 import { messageTable } from '@data/db/schemas/message'
+import { topicTable } from '@data/db/schemas/topic'
 import { messageService } from '@data/services/MessageService'
 import type { PersistTemporaryChatResponse } from '@shared/data/api/schemas/temporaryChats'
 import type { Message, MessageData } from '@shared/data/types/message'
@@ -130,5 +131,20 @@ describe('Temporary Chat end-to-end (handler → persist → persistent readback
     expect(ftsIds.has(m3.id)).toBe(true)
     expect(ftsIds.has(m4.id)).toBe(true)
     expect(ftsIds.has(m1.id)).toBe(false)
+  })
+
+  it('persist stores the caller-supplied source and name on the promoted topic', async () => {
+    const topic = unwrap<Topic>(await temporaryChatHandlers['/temporary/topics'].POST(req({ body: {} })))
+    await temporaryChatHandlers['/temporary/topics/:topicId/messages'].POST(
+      req({ params: { topicId: topic.id }, body: { role: 'user', data: mainText('hi') } })
+    )
+
+    await temporaryChatHandlers['/temporary/topics/:id/persist'].POST(
+      req({ params: { id: topic.id }, body: { name: 'Seeded title', source: 'quick_assistant' } })
+    )
+
+    const [row] = await dbh.db.select().from(topicTable).where(eq(topicTable.id, topic.id)).limit(1)
+    expect(row?.source).toBe('quick_assistant')
+    expect(row?.name).toBe('Seeded title')
   })
 })

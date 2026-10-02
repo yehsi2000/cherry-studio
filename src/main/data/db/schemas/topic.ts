@@ -23,6 +23,9 @@ export const topicTable = sqliteTable(
 
     traceId: text(),
 
+    // Provenance: '' = standard chat, 'quick_assistant' = promoted Quick Assistant history.
+    source: text().notNull().default(''),
+
     // Global fractional-indexing order key.
     ...orderKeyColumns,
 
@@ -36,6 +39,7 @@ export const topicTable = sqliteTable(
     index('topic_last_activity_at_idx').on(t.lastActivityAt),
     index('topic_updated_at_idx').on(t.updatedAt),
     orderKeyIndex('topic')(t),
-    index('topic_assistant_id_idx').on(t.assistantId)
+    index('topic_assistant_id_idx').on(t.assistantId),
+    index('topic_source_idx').on(t.source)
   ]
 )

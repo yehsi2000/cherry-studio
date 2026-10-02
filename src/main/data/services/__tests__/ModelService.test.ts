@@ -156,6 +156,8 @@ describe('UPDATE_MODEL_FIELD_MAP completeness', () => {
       'maxInputTokens',
       'maxOutputTokens',
       'pricing',
+      'reasoningEffortOverride',
+      'reasoningParamsOverride',
       'isEnabled',
       'isHidden',
       'isDeprecated',
@@ -2747,5 +2749,180 @@ describe('ModelService.reconcileForProvider', () => {
       skippedIds: [modelId]
     })
     warnSpy.mockRestore()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// reasoningEffortOverride — user effort vocabulary storage and application
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('reasoningEffortOverride', () => {
+  const dbh = setupTestDatabase()
+
+  // Codex-Sol shape: the catalog projection starts at `low` and lacks `none`.
+  const SOL_REASONING_PROFILE = {
+    ...OPENAI_CHAT_REASONING_PROFILE,
+    support: {
+      controls: [{ kind: 'effort', values: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'low' }],
+      defaultEffort: 'low'
+    }
+  }
+
+  async function seedSol(providerId = 'codex', modelId = 'gpt-6-sol') {
+    await dbh.db.insert(userProviderTable).values(providerRow(providerId, providerId))
+    await dbh.db.insert(userModelTable).values(
+      modelRow(providerId, modelId, {
+        presetModelId: modelId,
+        name: modelId
+      })
+    )
+    resolveModelMock.mockReturnValue({
+      presetModel: { id: modelId, name: modelId },
+      registryOverride: null,
+      reasoningProfile: SOL_REASONING_PROFILE
+    })
+  }
+
+  it('replaces the catalog vocabulary with the user one and keeps the descriptor fields', async () => {
+    await seedSol()
+
+    modelService.update('codex', 'gpt-6-sol', {
+      reasoningEffortOverride: { choices: ['none', 'low'], defaultChoice: 'none' }
+    })
+
+    const model = modelService.getByKey('codex', 'gpt-6-sol')
+    expect(model.reasoning?.selectableEfforts).toEqual(['none', 'low'])
+    expect(model.reasoning?.controls?.[0]).toMatchObject({ kind: 'effort' })
+    expect(model.reasoningEffortOverride).toEqual({ choices: ['none', 'low'], defaultChoice: 'none' })
+  })
+
+  it('restores the catalog projection when the override is cleared', async () => {
+    await seedSol()
+    modelService.update('codex', 'gpt-6-sol', { reasoningEffortOverride: { choices: ['none'] } })
+    modelService.update('codex', 'gpt-6-sol', { reasoningEffortOverride: null })
+
+    const model = modelService.getByKey('codex', 'gpt-6-sol')
+    expect(model.reasoning?.selectableEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(model.reasoningEffortOverride).toBeUndefined()
+  })
+
+  it('keeps overrides isolated per provider::model and survives unrelated updates', async () => {
+    await seedSol('codex', 'gpt-6-sol')
+    await dbh.db
+      .insert(userModelTable)
+      .values(modelRow('codex', 'gpt-6-astra', { presetModelId: 'gpt-6-astra', name: 'gpt-6-astra' }))
+    modelService.update('codex', 'gpt-6-sol', { reasoningEffortOverride: { choices: ['none'] } })
+    modelService.update('codex', 'gpt-6-sol', { name: 'Renamed' })
+
+    expect(modelService.getByKey('codex', 'gpt-6-sol').reasoning?.selectableEfforts).toEqual(['none'])
+    expect(modelService.getByKey('codex', 'gpt-6-astra').reasoning?.selectableEfforts).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max'
+    ])
+  })
+
+  it('never invents reasoning for a model that declares none', async () => {
+    await seedSol()
+    resolveModelMock.mockReturnValue({
+      presetModel: { id: 'gpt-6-sol', name: 'gpt-6-sol' },
+      registryOverride: null,
+      reasoningProfile: { format: 'openai-chat', wire: { disabled: true } }
+    })
+
+    modelService.update('codex', 'gpt-6-sol', { reasoningEffortOverride: { choices: ['none'] } })
+
+    const model = modelService.getByKey('codex', 'gpt-6-sol')
+    expect(model.reasoning).toBeUndefined()
+    expect(model.reasoningEffortOverride).toEqual({ choices: ['none'] })
+  })
+})
+
+describe('reasoningParamsOverride', () => {
+  const dbh = setupTestDatabase()
+
+  async function seedSol(reasoningProfile?: any) {
+    await dbh.db.insert(userProviderTable).values(providerRow('codex', 'codex'))
+    await dbh.db
+      .insert(userModelTable)
+      .values(modelRow('codex', 'gpt-6-sol', { presetModelId: 'gpt-6-sol', name: 'sol' }))
+    resolveModelMock.mockReturnValue({
+      presetModel: { id: 'gpt-6-sol', name: 'sol' },
+      registryOverride: null,
+      reasoningProfile: reasoningProfile ?? {
+        format: 'openai-responses',
+        support: {
+          controls: [{ kind: 'effort', values: ['low', 'medium', 'high'], default: 'low' }],
+          defaultEffort: 'low'
+        },
+        wire: {
+          off: { operations: [{ target: 'reasoningEffort', value: { source: 'literal', value: 'none' } }] },
+          auto: { operations: [{ target: 'reasoningEffort', value: { source: 'effort' } }] },
+          effort: { operations: [{ target: 'reasoningEffort', value: { source: 'effort' } }] }
+        }
+      }
+    })
+  }
+
+  it('stores advanced params and exposes them on the runtime model with types preserved', async () => {
+    await seedSol()
+
+    modelService.update('codex', 'gpt-6-sol', { reasoningParamsOverride: { reasoning: { exclude: true } } })
+
+    const model = modelService.getByKey('codex', 'gpt-6-sol')
+    expect(model.reasoningParamsOverride).toEqual({ reasoning: { exclude: true } })
+    expect(typeof (model.reasoningParamsOverride as any).reasoning.exclude).toBe('boolean')
+  })
+
+  it('rejects params that collide with reachable reasoning control fields', async () => {
+    await seedSol()
+
+    expect(() =>
+      modelService.update('codex', 'gpt-6-sol', { reasoningParamsOverride: { reasoning: { effort: 42 } } })
+    ).toThrowError(/collide/)
+
+    const row = await dbh.db.select().from(userModelTable).where(eq(userModelTable.id, 'codex::gpt-6-sol'))
+    expect(row[0].reasoningParamsOverride).toBeNull()
+  })
+
+  it('allows params the standard controls can never write, or any params on a non-reasoning model', async () => {
+    await seedSol()
+    expect(() =>
+      modelService.update('codex', 'gpt-6-sol', { reasoningParamsOverride: { reasoning: { exclude: true } } })
+    ).not.toThrow()
+
+    resolveModelMock.mockReturnValue({
+      presetModel: { id: 'gpt-6-sol', name: 'sol' },
+      registryOverride: null,
+      reasoningProfile: { format: 'openai-responses', wire: { disabled: true } }
+    })
+    modelService.update('codex', 'gpt-6-sol', { reasoningEffortOverride: { choices: ['none'] } })
+    expect(() =>
+      modelService.update('codex', 'gpt-6-sol', { reasoningParamsOverride: { reasoning: { effort: 42 } } })
+    ).not.toThrow()
+  })
+
+  it('lets the effort override widen the reachable set before the conflict check', async () => {
+    await seedSol()
+    // Removing every tier makes the effort knob unreachable for standard controls…
+    modelService.update('codex', 'gpt-6-sol', { reasoningEffortOverride: { choices: ['none'] } })
+    // …but `none` activates the off mode, whose knob is the same wire field.
+    expect(() =>
+      modelService.update('codex', 'gpt-6-sol', { reasoningParamsOverride: { reasoning: { effort: 42 } } })
+    ).toThrowError(/collide/)
+  })
+
+  it('clears advanced params with null and survives unrelated updates', async () => {
+    await seedSol()
+    modelService.update('codex', 'gpt-6-sol', { reasoningParamsOverride: { reasoning: { exclude: true } } })
+    modelService.update('codex', 'gpt-6-sol', { name: 'Renamed' })
+    expect(modelService.getByKey('codex', 'gpt-6-sol').reasoningParamsOverride).toEqual({
+      reasoning: { exclude: true }
+    })
+
+    modelService.update('codex', 'gpt-6-sol', { reasoningParamsOverride: null })
+    expect(modelService.getByKey('codex', 'gpt-6-sol').reasoningParamsOverride).toBeUndefined()
   })
 })

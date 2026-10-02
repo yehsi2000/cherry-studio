@@ -61,6 +61,8 @@ export const ListTopicsQuerySchema = z.strictObject({
   limit: z.coerce.number().int().positive().max(200).optional(),
   /** Substring filter on topic name (case-insensitive LIKE). */
   q: z.string().optional(),
+  /** Exact `topic.source` match ('' = standard chat, 'quick_assistant' = promoted quick-assistant history). */
+  source: z.string().optional(),
   /** `true` lists only trashed topics; omitted/false lists active topics. */
   inTrash: z.boolean().optional()
 })

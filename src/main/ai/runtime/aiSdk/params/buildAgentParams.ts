@@ -17,6 +17,7 @@ import {
   WEB_SEARCH_TOOL_NAME
 } from '@shared/ai/builtinTools'
 import type { CompactionSink } from '@shared/ai/compaction'
+import { applyReasoningEffortOverride } from '@shared/ai/reasoning'
 import type { WebSearchCapability } from '@shared/data/preference/preferenceTypes'
 import {
   type Assistant,
@@ -76,6 +77,7 @@ import type { RequestFeature } from './feature'
 import { hasAnchorRow } from './features/contextBuild'
 import { INTERNAL_FEATURES } from './features/internalFeatures'
 import { type NativeFileSupport, resolveNativeFileSupport } from './nativeFileSupport'
+import { resolveReasoningOverrideBodyParams } from './reasoningBodyParams'
 import type { RequestScope, SdkConfig } from './scope'
 
 const logger = loggerService.withContext('buildAgentParams')
@@ -214,8 +216,14 @@ export async function buildAgentParams(input: BuildAgentParamsInput): Promise<Bu
     runtimeProviderId === 'google-vertex-maas' ? ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS : endpointType
   const reasoningProfile = providerRegistryService.resolveReasoningProfile(provider, model, reasoningEndpointType)
   const serviceTierControl = providerRegistryService.resolveServiceTierControl(provider, model, endpointType)
-  const invocationModel = reasoningProfile.support
-    ? { ...model, reasoning: projectRuntimeReasoning(reasoningProfile.support, reasoningProfile.wire) }
+  // Re-derive the catalog projection here, then apply the user's effort
+  // override through the same seam the renderer reads — the wire may only
+  // see a vocabulary the user actually chose.
+  const projectedReasoning = reasoningProfile.support
+    ? projectRuntimeReasoning(reasoningProfile.support, reasoningProfile.wire)
+    : model.reasoning
+  const invocationModel = projectedReasoning
+    ? { ...model, reasoning: applyReasoningEffortOverride(projectedReasoning, model.reasoningEffortOverride) }
     : model
   const customParameters = extractAiSdkStandardParams(assistant ? getCustomParameters(assistant) : {})
   customParameters.standardParams = filterStandardParams(customParameters.standardParams, model)
@@ -626,6 +634,23 @@ function buildAgentOptions(
         )
       })
     }
+  }
+
+  // A user effort override is authoritative: also deliver its resolved effort at
+  // the request-body layer, where SDK per-model ladders cannot strip it (e.g. `none`).
+  // Advanced reasoning params share the delivery; save-time conflict checks keep
+  // the two writers off the same wire field.
+  const overrideBodyParams = {
+    ...(model.reasoningEffortOverride && reasoning.kind !== 'omit'
+      ? resolveReasoningOverrideBodyParams(reasoning, endpointType)
+      : {}),
+    ...model.reasoningParamsOverride
+  }
+  if (Object.keys(overrideBodyParams).length > 0) {
+    sdkConfig.providerSettings.fetch = createCustomParamsFetch(
+      sdkConfig.providerSettings.fetch ?? globalThis.fetch,
+      overrideBodyParams
+    )
   }
 
   // Highest-precedence per-request overrides (assistant-less callers, e.g. the API gateway).

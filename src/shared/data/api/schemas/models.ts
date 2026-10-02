@@ -15,9 +15,11 @@ import {
   MODEL_CAPABILITY,
   objectValues,
   ParameterSupportDbSchema,
+  ReasoningParamsOverrideSchema,
   RuntimeModelPricingSchema,
   type UniqueModelId,
-  UniqueModelIdSchema
+  UniqueModelIdSchema,
+  UserReasoningEffortOverrideSchema
 } from '../../types/model'
 
 /** Query parameters for listing models */
@@ -97,6 +99,10 @@ export const UpdateModelSchema = CreateModelSchema.omit({
     contextWindow: PositiveModelTokenLimitSchema.nullable().optional(),
     maxInputTokens: PositiveModelTokenLimitSchema.nullable().optional(),
     maxOutputTokens: PositiveModelTokenLimitSchema.nullable().optional(),
+    /** `null` restores the catalog effort vocabulary. */
+    reasoningEffortOverride: UserReasoningEffortOverrideSchema.nullable().optional(),
+    /** `null` stops injecting advanced reasoning wire params. */
+    reasoningParamsOverride: ReasoningParamsOverrideSchema.nullable().optional(),
     isEnabled: z.boolean().optional(),
     isHidden: z.boolean().optional(),
     isDeprecated: z.boolean().optional(),

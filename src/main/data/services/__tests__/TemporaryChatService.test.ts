@@ -1,13 +1,16 @@
-import { setupTestDatabase } from '@test-helpers/db'
+import { setupTestDatabase, withRoot } from '@test-helpers/db'
+import { MockMainPreferenceServiceUtils } from '@test-mocks/main/PreferenceService'
 import { eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { aiUsageRecordTable } from '@data/db/schemas/aiUsageRecord'
 import { messageTable } from '@data/db/schemas/message'
+import { pinTable } from '@data/db/schemas/pin'
 import { topicTable } from '@data/db/schemas/topic'
 import { userModelTable } from '@data/db/schemas/userModel'
 import { userProviderTable } from '@data/db/schemas/userProvider'
 import { TemporaryChatService } from '@data/services/TemporaryChatService'
+import { topicService } from '@data/services/TopicService'
 
 const { notifyDataApiDataChangeMock } = vi.hoisted(() => ({ notifyDataApiDataChangeMock: vi.fn() }))
 vi.mock('@data/dataApiDataChange', () => ({ notifyDataApiDataChange: notifyDataApiDataChangeMock }))
@@ -381,10 +384,169 @@ describe('TemporaryChatService', () => {
       expect(dbTopic?.orderKey?.length).toBeGreaterThan(0)
     })
 
+    it('writes the promoted source and seed name with the topic in the same transaction', async () => {
+      const topic = service.createTopic({ name: 'qa' })
+      service.appendMessage(topic.id, { role: 'user', data: mainText('hi') })
+
+      service.persist(topic.id, { source: 'quick_assistant', name: 'Seeded title' })
+
+      const [dbTopic] = await dbh.db.select().from(topicTable).where(eq(topicTable.id, topic.id)).limit(1)
+      expect(dbTopic?.source).toBe('quick_assistant')
+      expect(dbTopic?.name).toBe('Seeded title')
+      // Seed names stay auto-namable: only user renames set this flag.
+      expect(dbTopic?.isNameManuallyEdited).toBe(false)
+    })
+
+    it('promotes as standard (source "") when the caller passes no source', async () => {
+      const topic = service.createTopic({ name: 'plain' })
+      service.persist(topic.id)
+
+      const [dbTopic] = await dbh.db.select().from(topicTable).where(eq(topicTable.id, topic.id)).limit(1)
+      expect(dbTopic?.source).toBe('')
+    })
+
+    it('preserves every message.data part and messageSnapshot verbatim across promotion', async () => {
+      const topic = service.createTopic({ name: 'multi' })
+      const user: MessageData = {
+        parts: [
+          { type: 'text', text: 'question' },
+          { type: 'text', text: 'continued' }
+        ]
+      }
+      const answer: MessageData = { parts: [{ type: 'text', text: 'answer' }] }
+      const snapshot = {
+        id: 'a1',
+        name: 'GPT Assistant',
+        emoji: '🤖',
+        model: { id: 'mdl-1', name: 'GPT', provider: 'openai' }
+      }
+      service.appendMessage(topic.id, { role: 'user', data: user })
+      service.appendMessage(topic.id, { role: 'assistant', data: answer, messageSnapshot: snapshot })
+
+      service.persist(topic.id)
+
+      const rows = await dbh.db.select().from(messageTable).where(eq(messageTable.topicId, topic.id))
+      const byRole = new Map(rows.filter((r) => r.role !== 'root').map((r) => [r.role, r]))
+      expect(byRole.get('user')?.data).toEqual(user)
+      expect(byRole.get('assistant')?.data).toEqual(answer)
+      expect(byRole.get('assistant')?.messageSnapshot).toEqual(snapshot)
+    })
+
     // NOTE: The original "rollback on tx failure" test dropped the message
     // table mid-run. That would corrupt the shared schema for all subsequent
     // tests in the harness. We drop this specific scenario — the rollback
     // semantics are better exercised by the handler-layer integration test
     // that uses a fresh tmpdir per case.
+  })
+
+  describe('quick-assistant retention', () => {
+    async function seedQuickAssistantTopic(
+      id: string,
+      lastActivityAt: number,
+      extra: Partial<typeof topicTable.$inferInsert> = {}
+    ): Promise<void> {
+      await dbh.db.insert(topicTable).values({
+        id,
+        name: id,
+        source: 'quick_assistant',
+        orderKey: 'a0',
+        lastActivityAt,
+        createdAt: lastActivityAt,
+        updatedAt: lastActivityAt,
+        ...extra
+      })
+      await dbh.db.insert(messageTable).values(
+        withRoot(id, [
+          {
+            id: `msg-${id}`,
+            topicId: id,
+            role: 'user',
+            data: mainText(id),
+            status: 'success',
+            createdAt: 1,
+            updatedAt: 1
+          }
+        ])
+      )
+    }
+
+    it('prunes quick_assistant topics beyond the newest history_limit after promotion', async () => {
+      MockMainPreferenceServiceUtils.setPreferenceValue('feature.quick_assistant.history_limit', 2)
+      await seedQuickAssistantTopic('qa-oldest', 100)
+      await seedQuickAssistantTopic('qa-middle', 200)
+      await seedQuickAssistantTopic('qa-pinned', 50)
+      await dbh.db.insert(pinTable).values({
+        id: 'pin-qa',
+        entityType: 'topic',
+        entityId: 'qa-pinned',
+        orderKey: 'a0',
+        createdAt: 1,
+        updatedAt: 1
+      })
+      await seedQuickAssistantTopic('qa-trashed', 60, { deletedAt: 60 })
+      await dbh.db.insert(topicTable).values({
+        id: 'std-old',
+        name: 'std-old',
+        source: '',
+        orderKey: 'a1',
+        lastActivityAt: 50,
+        createdAt: 50,
+        updatedAt: 50
+      })
+
+      const topic = service.createTopic({ name: 'fresh' })
+      service.appendMessage(topic.id, { role: 'user', data: mainText('new') })
+      service.persist(topic.id, { source: 'quick_assistant' })
+
+      const ids = (await dbh.db.select({ id: topicTable.id }).from(topicTable)).map((r) => r.id)
+      expect(ids).toContain(topic.id) // just promoted (newest) — kept
+      expect(ids).toContain('qa-middle') // second newest — kept
+      expect(ids).toContain('qa-pinned') // pinned — exempt
+      expect(ids).toContain('qa-trashed') // trashed — exempt
+      expect(ids).toContain('std-old') // not quick_assistant — untouched
+      expect(ids).not.toContain('qa-oldest') // overflow — permanently deleted
+
+      const msgTopics = (await dbh.db.select({ topicId: messageTable.topicId }).from(messageTable)).map(
+        (r) => r.topicId
+      )
+      expect(msgTopics).not.toContain('qa-oldest') // messages purged with the topic
+    })
+
+    it('does not prune on a standard promotion', async () => {
+      MockMainPreferenceServiceUtils.setPreferenceValue('feature.quick_assistant.history_limit', 1)
+      await seedQuickAssistantTopic('qa-keep-1', 100)
+      await seedQuickAssistantTopic('qa-keep-2', 200)
+
+      const topic = service.createTopic({ name: 'std' })
+      service.persist(topic.id)
+
+      const ids = (await dbh.db.select({ id: topicTable.id }).from(topicTable)).map((r) => r.id)
+      expect(ids).toContain('qa-keep-1')
+      expect(ids).toContain('qa-keep-2')
+    })
+
+    it('a failing prune never fails or undoes the promotion', async () => {
+      MockMainPreferenceServiceUtils.setPreferenceValue('feature.quick_assistant.history_limit', 1)
+      await seedQuickAssistantTopic('qa-old', 100)
+      const pruneSpy = vi.spyOn(topicService, 'pruneQuickAssistantHistory').mockImplementation(() => {
+        throw new Error('boom')
+      })
+
+      try {
+        const topic = service.createTopic({ name: 'fresh' })
+        service.appendMessage(topic.id, { role: 'user', data: mainText('new') })
+
+        expect(() => service.persist(topic.id, { source: 'quick_assistant' })).not.toThrow()
+
+        const [dbTopic] = await dbh.db.select().from(topicTable).where(eq(topicTable.id, topic.id)).limit(1)
+        expect(dbTopic?.source).toBe('quick_assistant')
+        expect(dbTopic?.activeNodeId).not.toBeNull()
+        // Prune never ran — the overflow topic is untouched.
+        const ids = (await dbh.db.select({ id: topicTable.id }).from(topicTable)).map((r) => r.id)
+        expect(ids).toContain('qa-old')
+      } finally {
+        pruneSpy.mockRestore()
+      }
+    })
   })
 })

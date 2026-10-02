@@ -30,6 +30,7 @@ const normalTopic = {
   id: 'topic-1',
   name: 'Topic',
   isNameManuallyEdited: false,
+  source: '',
   orderKey: 'a0',
   lastActivityAt: '2026-08-25T00:00:00.000Z',
   createdAt: '2026-08-24T00:00:00.000Z',

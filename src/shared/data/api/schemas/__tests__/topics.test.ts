@@ -16,11 +16,22 @@ describe('ListTopicsQuerySchema', () => {
     expect(ListTopicsQuerySchema.safeParse({ ids: [] }).success).toBe(false)
     expect(ListTopicsQuerySchema.safeParse({ ids: [...ids, 'overflow'] }).success).toBe(false)
   })
+
+  it('accepts an exact source filter', () => {
+    expect(ListTopicsQuerySchema.parse({ source: 'quick_assistant' }).source).toBe('quick_assistant')
+    expect(ListTopicsQuerySchema.parse({}).source).toBeUndefined()
+  })
 })
 
 describe('CreateTopicSchema', () => {
   it.each(['sourceNodeId', 'groupId'])('rejects unsupported key %s', (key) => {
     expect(() => CreateTopicSchema.parse({ [key]: 'value' })).toThrow(/unrecognized/i)
+  })
+
+  // Provenance is owned by the temporary-chat persist flow — clients must not
+  // be able to claim it through create/update DTOs.
+  it('rejects source', () => {
+    expect(() => CreateTopicSchema.parse({ source: 'quick_assistant' })).toThrow(/unrecognized/i)
   })
 })
 
@@ -45,6 +56,12 @@ describe('UpdateTopicSchema', () => {
 
   it('accepts null assistantId to clear default-assistant ownership', () => {
     expect(UpdateTopicSchema.parse({ assistantId: null })).toEqual({ assistantId: null })
+  })
+
+  // Provenance is owned by the temporary-chat persist flow — PATCH must not
+  // rewrite it (retention keys off source='quick_assistant').
+  it('throws on source', () => {
+    expect(() => UpdateTopicSchema.parse({ source: 'quick_assistant' })).toThrow(/unrecognized/i)
   })
 })
 
