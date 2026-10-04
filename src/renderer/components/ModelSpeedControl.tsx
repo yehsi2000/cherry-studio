@@ -202,7 +202,15 @@ export function ModelSpeedControl({
   if (!supportsReasoning && !supportsServiceTier && !supportsFast) return null
 
   const sliderEfforts = reasoningOptions.filter((effort) => effort !== 'default')
-  const showEffortSlider = sliderEfforts.filter((effort) => effort !== 'none' && effort !== 'auto').length > 1
+  // A slider only expresses one ordered intensity ladder. Mixed-in modes (none/auto)
+  // or a non-contiguous custom ladder render as an explicit option list instead.
+  const tierEfforts = sliderEfforts.filter((effort) => effort !== 'none' && effort !== 'auto')
+  const hasMixedModes = tierEfforts.length !== sliderEfforts.length
+  const isContiguousLadder = tierEfforts.every(
+    (effort, index) =>
+      index === 0 || SLIDER_EFFORT_ORDER.indexOf(effort) === SLIDER_EFFORT_ORDER.indexOf(tierEfforts[index - 1]) + 1
+  )
+  const showEffortSlider = tierEfforts.length > 1 && !hasMixedModes && isContiguousLadder
 
   // A model swap reconciles in an effect owned by the caller. During that one render, preserve
   // provider Default rather than displaying an explicit value the new model rejects.

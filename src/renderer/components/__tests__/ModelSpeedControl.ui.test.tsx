@@ -116,6 +116,16 @@ const codexModel = {
   }
 } satisfies Model
 
+/** Contiguous intensity ladder with no mixed-in modes — the only shape a slider may express. */
+const sliderModel = {
+  ...codexModel,
+  reasoning: {
+    controls: [{ kind: 'effort', values: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'max' }],
+    defaultEffort: 'max',
+    selectableEfforts: ['max', 'high', 'medium', 'low', 'xhigh']
+  }
+} satisfies Model
+
 function ControlledSpeedControl({ model, initialEffort }: { model: Model; initialEffort: ThinkingOption }) {
   const [reasoningEffort, setReasoningEffort] = useState<ThinkingOption>(initialEffort)
   const [fastMode, setFastMode] = useState(false)
@@ -166,35 +176,46 @@ describe('ModelSpeedControl UI', () => {
     ).toBe('default')
   })
 
-  it('uses a slider for GPT-5.6, with Off first and Default as a separate choice', () => {
-    const { container } = render(<ControlledSpeedControl model={codexModel} initialEffort="high" />)
+  it('renders an explicit option menu when the vocabulary mixes Off into intensity tiers', () => {
+    render(<ControlledSpeedControl model={codexModel} initialEffort="high" />)
 
     expect(screen.getByRole('button', { name: 'agent.speed.title' })).toHaveTextContent(
       'assistants.settings.reasoning_effort.high'
     )
-    const slider = screen.getByTestId('reasoning-slider')
-    expect(slider).toHaveAttribute('data-max', '5')
-    expect(slider).toHaveAttribute('data-value', '3')
-    expect(container.querySelectorAll('[data-slot="model-speed-effort-step"]')).toHaveLength(5)
-    expect(container.querySelector('[data-slot="model-speed-effort-step"][data-index="3"]')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('reasoning-menu')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'assistants.settings.reasoning_effort.default' })).toHaveAttribute(
-      'aria-pressed',
-      'false'
-    )
-    fireEvent.click(screen.getByTestId('select-slider-min'))
-    expect(container.querySelectorAll('[data-slot="model-speed-effort-step"]')).toHaveLength(5)
-    expect(container.querySelector('[data-slot="model-speed-effort-step"][data-index="0"]')).not.toBeInTheDocument()
+    // Off is a mode, not a speed step — a mixed vocabulary must never ride a slider.
+    expect(screen.queryByTestId('reasoning-slider')).not.toBeInTheDocument()
+    const menu = screen.getByTestId('reasoning-menu')
+    expect(menu).toHaveAttribute('data-value', 'high')
+    for (const label of ['default', 'off', 'low', 'medium', 'high', 'xhigh', 'max'] as const) {
+      expect(screen.getByRole('radio', { name: `assistants.settings.reasoning_effort.${label}` })).toBeInTheDocument()
+    }
+
+    fireEvent.click(screen.getByRole('radio', { name: 'assistants.settings.reasoning_effort.off' }))
+
+    expect(screen.getByTestId('reasoning-menu')).toHaveAttribute('data-value', 'none')
     expect(screen.getByRole('button', { name: 'agent.speed.title' })).toHaveTextContent(
       'assistants.settings.reasoning_effort.off'
     )
+  })
 
-    fireEvent.click(screen.getByTestId('select-slider-max'))
-
-    expect(screen.getByRole('button', { name: 'agent.speed.title' })).toHaveTextContent(
-      'assistants.settings.reasoning_effort.max'
+  it('renders an explicit option menu for a non-contiguous custom ladder', () => {
+    render(
+      <ControlledSpeedControl
+        model={{
+          ...sliderModel,
+          reasoning: {
+            controls: [{ kind: 'effort', values: ['low', 'high'], default: 'low' }],
+            defaultEffort: 'low',
+            selectableEfforts: ['low', 'high']
+          }
+        }}
+        initialEffort="high"
+      />
     )
-    expect(screen.getByTestId('model-speed-effort-label')).toHaveTextContent('assistants.settings.reasoning_effort.max')
+
+    expect(screen.queryByTestId('reasoning-slider')).not.toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'assistants.settings.reasoning_effort.low' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'assistants.settings.reasoning_effort.high' })).toBeInTheDocument()
   })
 
   it('offers Ultra as the highest reasoning level for GPT-6 Astra', async () => {
@@ -229,13 +250,13 @@ describe('ModelSpeedControl UI', () => {
   })
 
   it("displays a stored Default at the model's declared default without changing its submitted value", () => {
-    render(<ControlledSpeedControl model={codexModel} initialEffort="default" />)
+    render(<ControlledSpeedControl model={sliderModel} initialEffort="default" />)
 
     expect(screen.getByRole('button', { name: 'agent.speed.title' })).toHaveTextContent(
       'assistants.settings.reasoning_effort.default'
     )
     expect(screen.queryByTestId('reasoning-menu')).not.toBeInTheDocument()
-    expect(screen.getByTestId('reasoning-slider')).toHaveAttribute('data-value', '5')
+    expect(screen.getByTestId('reasoning-slider')).toHaveAttribute('data-value', '4')
     expect(
       screen.queryByRole('button', { name: 'assistants.settings.reasoning_effort.default' })
     ).not.toBeInTheDocument()
@@ -281,7 +302,7 @@ describe('ModelSpeedControl UI', () => {
     )
   })
 
-  it('uses a single slider for DeepSeek V4 and keeps Off as the first level', () => {
+  it("renders DeepSeek V4's mixed and non-contiguous vocabulary as a menu with Off selectable", () => {
     render(
       <ControlledSpeedControl
         model={{
@@ -300,17 +321,16 @@ describe('ModelSpeedControl UI', () => {
       />
     )
 
-    expect(screen.getByTestId('reasoning-slider')).toHaveAttribute('data-max', '2')
-    expect(screen.getByTestId('reasoning-slider')).toHaveAttribute('data-value', '1')
-    expect(screen.queryByTestId('reasoning-menu')).not.toBeInTheDocument()
-    expect(
-      screen.queryByRole('button', { name: 'assistants.settings.reasoning_effort.default' })
-    ).not.toBeInTheDocument()
+    expect(screen.queryByTestId('reasoning-slider')).not.toBeInTheDocument()
+    expect(screen.getByTestId('reasoning-menu')).toHaveAttribute('data-value', 'default')
+    expect(screen.getByRole('radio', { name: 'assistants.settings.reasoning_effort.off' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('radio', { name: 'assistants.settings.reasoning_effort.off' }))
+    expect(screen.getByTestId('reasoning-menu')).toHaveAttribute('data-value', 'none')
   })
 
   it('restores provider Default after selecting an explicit slider tier', async () => {
     const user = userEvent.setup()
-    render(<ControlledSpeedControl model={codexModel} initialEffort="default" />)
+    render(<ControlledSpeedControl model={sliderModel} initialEffort="default" />)
 
     expect(screen.getByRole('button', { name: 'agent.speed.title' })).toHaveTextContent(
       'assistants.settings.reasoning_effort.default'
@@ -320,14 +340,14 @@ describe('ModelSpeedControl UI', () => {
     expect(screen.getByRole('button', { name: 'agent.speed.title' })).toHaveTextContent(
       'assistants.settings.reasoning_effort.max'
     )
-    expect(screen.getByTestId('reasoning-slider')).toHaveAttribute('data-value', '5')
+    expect(screen.getByTestId('reasoning-slider')).toHaveAttribute('data-value', '4')
 
     await user.click(screen.getByRole('button', { name: 'assistants.settings.reasoning_effort.default' }))
 
     expect(screen.getByRole('button', { name: 'agent.speed.title' })).toHaveTextContent(
       'assistants.settings.reasoning_effort.default'
     )
-    expect(screen.getByTestId('reasoning-slider')).toHaveAttribute('data-value', '5')
+    expect(screen.getByTestId('reasoning-slider')).toHaveAttribute('data-value', '4')
     expect(screen.getByTestId('model-speed-effort-label')).toHaveTextContent(
       'assistants.settings.reasoning_effort.default'
     )
@@ -337,7 +357,7 @@ describe('ModelSpeedControl UI', () => {
     const outerWheel = vi.fn()
     render(
       <div onWheel={outerWheel}>
-        <ControlledSpeedControl model={codexModel} initialEffort="high" />
+        <ControlledSpeedControl model={sliderModel} initialEffort="high" />
       </div>
     )
 
@@ -346,46 +366,46 @@ describe('ModelSpeedControl UI', () => {
     fireEvent(slider, firstWheel)
     expect(firstWheel.defaultPrevented).toBe(true)
     fireEvent.wheel(slider, { deltaY: -15 })
-    expect(slider).toHaveAttribute('data-value', '3')
+    expect(slider).toHaveAttribute('data-value', '2')
 
     fireEvent.wheel(slider, { deltaY: -15 })
+    expect(slider).toHaveAttribute('data-value', '3')
+
+    fireEvent.wheel(slider, { deltaY: -100 })
     expect(slider).toHaveAttribute('data-value', '4')
 
     fireEvent.wheel(slider, { deltaY: -100 })
-    expect(slider).toHaveAttribute('data-value', '5')
-
-    fireEvent.wheel(slider, { deltaY: -100 })
-    expect(slider).toHaveAttribute('data-value', '5')
+    expect(slider).toHaveAttribute('data-value', '4')
 
     fireEvent.wheel(slider, { deltaY: 100 })
-    expect(slider).toHaveAttribute('data-value', '4')
+    expect(slider).toHaveAttribute('data-value', '3')
     expect(outerWheel).toHaveBeenCalledTimes(1)
   })
 
   it('treats line and page wheel events as one effort step each', () => {
-    render(<ControlledSpeedControl model={codexModel} initialEffort="high" />)
+    render(<ControlledSpeedControl model={sliderModel} initialEffort="high" />)
 
     const slider = screen.getByRole('slider', { name: 'agent.speed.effort' })
     fireEvent.wheel(slider, { deltaMode: WheelEvent.DOM_DELTA_LINE, deltaY: -1 })
-    expect(slider).toHaveAttribute('data-value', '4')
+    expect(slider).toHaveAttribute('data-value', '3')
 
     fireEvent.wheel(slider, { deltaMode: WheelEvent.DOM_DELTA_PAGE, deltaY: -1 })
-    expect(slider).toHaveAttribute('data-value', '5')
+    expect(slider).toHaveAttribute('data-value', '4')
   })
 
   it('resets an incomplete wheel step when the wheel target ref is rebound', () => {
-    const { rerender } = render(<ControlledSpeedControl model={codexModel} initialEffort="high" />)
+    const { rerender } = render(<ControlledSpeedControl model={sliderModel} initialEffort="high" />)
 
     let slider = screen.getByRole('slider', { name: 'agent.speed.effort' })
     fireEvent.wheel(slider, { deltaY: -20 })
 
-    rerender(<ControlledSpeedControl model={codexModel} initialEffort="high" />)
+    rerender(<ControlledSpeedControl model={sliderModel} initialEffort="high" />)
     slider = screen.getByRole('slider', { name: 'agent.speed.effort' })
     fireEvent.wheel(slider, { deltaY: -20 })
-    expect(slider).toHaveAttribute('data-value', '3')
+    expect(slider).toHaveAttribute('data-value', '2')
 
     fireEvent.wheel(slider, { deltaY: -20 })
-    expect(slider).toHaveAttribute('data-value', '4')
+    expect(slider).toHaveAttribute('data-value', '3')
   })
 
   it('toggles Fast only for a capable provider-model pair', () => {
@@ -402,7 +422,7 @@ describe('ModelSpeedControl UI', () => {
   })
 
   it('hides Fast when the caller has nowhere to persist it', () => {
-    render(<ModelSpeedControl model={codexModel} reasoningEffort="max" onReasoningEffortChange={vi.fn()} />)
+    render(<ModelSpeedControl model={sliderModel} reasoningEffort="max" onReasoningEffortChange={vi.fn()} />)
 
     expect(screen.queryByRole('button', { name: 'agent.speed.fast' })).not.toBeInTheDocument()
     expect(screen.getByTestId('reasoning-slider')).toBeInTheDocument()
